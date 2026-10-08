@@ -137,7 +137,8 @@ In the first run nearly all of that time is spent waiting for the 36-requests-pe
 make test       # backend: store, policy, resolution, every flow, API (no network)
 make test-web   # frontend (Vitest)
 make test-live  # live NVIDIA checks, needs NVIDIA_API_KEY
-make lint
+make lint       # Ruff + oxlint, and formatting checks (Ruff, Prettier)
+make format     # apply lint autofixes and format everything
 make graph     # re-export docs/workflow-graph.mmd from the compiled graph
 make test-alerts  # promtool unit tests for the alert rules (needs: brew install prometheus)
 ```

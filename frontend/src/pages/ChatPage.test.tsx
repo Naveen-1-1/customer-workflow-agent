@@ -41,7 +41,9 @@ describe('ChatPage', () => {
 
   it('shows the approval wait and keeps input disabled', () => {
     const { emit } = setup()
-    emit(view({ pending: { type: 'supervisor_approval', interrupt_id: 'i3', refund_total: 1201.55 } }))
+    emit(
+      view({ pending: { type: 'supervisor_approval', interrupt_id: 'i3', refund_total: 1201.55 } }),
+    )
     expect(screen.getByText(/return of \$1,201\.55 needs a supervisor/)).toBeInTheDocument()
     expect(composer()).toBeDisabled()
   })

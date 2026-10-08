@@ -12,7 +12,7 @@ export function MessageList({ messages, typing }: { messages: Message[]; typing:
     <div className="flex flex-col gap-2" aria-live="polite">
       {messages.map((m) =>
         m.role === 'event' ? (
-          <p key={m.id} className="text-muted-foreground self-center text-xs">
+          <p key={m.id} className="self-center text-xs text-muted-foreground">
             {m.text}
           </p>
         ) : (
@@ -22,8 +22,8 @@ export function MessageList({ messages, typing }: { messages: Message[]; typing:
             className={cn(
               'max-w-[80%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap',
               m.role === 'customer'
-                ? 'bg-primary text-primary-foreground self-end'
-                : 'bg-muted self-start',
+                ? 'self-end bg-primary text-primary-foreground'
+                : 'self-start bg-muted',
               m.kind === 'transfer' && 'font-semibold',
             )}
           >
@@ -32,7 +32,7 @@ export function MessageList({ messages, typing }: { messages: Message[]; typing:
         ),
       )}
       {typing && (
-        <div className="bg-muted text-muted-foreground self-start rounded-2xl px-3 py-2 text-sm">
+        <div className="self-start rounded-2xl bg-muted px-3 py-2 text-sm text-muted-foreground">
           <span className="animate-pulse">Typing…</span>
         </div>
       )}

@@ -1,0 +1,2 @@
+# Also skips everything in .gitignore (node_modules, dist, ...)
+package-lock.json

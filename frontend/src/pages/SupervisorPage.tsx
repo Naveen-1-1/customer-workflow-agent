@@ -26,7 +26,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import {
   Table,
   TableBody,
@@ -66,9 +72,7 @@ function DecisionDialog({
           </DialogDescription>
         </DialogHeader>
         <label className="grid gap-1 text-sm">
-          <span>
-            Note (optional){approved ? ', kept internal' : ', shown to the customer'}
-          </span>
+          <span>Note (optional){approved ? ', kept internal' : ', shown to the customer'}</span>
           <Textarea maxLength={500} value={note} onChange={(e) => setNote(e.target.value)} />
         </label>
         <DialogFooter>
@@ -99,7 +103,11 @@ function TranscriptSheet({ chatId, onClose }: { chatId: string | null; onClose: 
   const { api } = useDeps()
   const [loaded, setLoaded] = useState<{ id: string; view: ChatView } | null>(null)
   useEffect(() => {
-    if (chatId) api.getChat(chatId).then((view) => setLoaded({ id: chatId, view }), () => {})
+    if (chatId)
+      api.getChat(chatId).then(
+        (view) => setLoaded({ id: chatId, view }),
+        () => {},
+      )
   }, [api, chatId])
   const view = loaded && loaded.id === chatId ? loaded.view : null
   return (
@@ -113,7 +121,7 @@ function TranscriptSheet({ chatId, onClose }: { chatId: string | null; onClose: 
           {view ? (
             <MessageList messages={view.messages} typing={false} />
           ) : (
-            <p className="text-muted-foreground text-sm">Loading…</p>
+            <p className="text-sm text-muted-foreground">Loading…</p>
           )}
         </div>
       </SheetContent>
@@ -199,7 +207,7 @@ export function SupervisorPage() {
       </header>
 
       {meta && (
-        <p className="text-muted-foreground text-sm">
+        <p className="text-sm text-muted-foreground">
           {meta.approval_enabled
             ? `Returns over ${usd(meta.approval_threshold)} wait here for your decision.`
             : 'Approval is switched off (APPROVAL_ENABLED=false), so returns go straight through.'}
@@ -221,7 +229,7 @@ export function SupervisorPage() {
         <TableBody>
           {approvals?.length === 0 && (
             <TableRow>
-              <TableCell colSpan={7} className="text-muted-foreground text-center">
+              <TableCell colSpan={7} className="text-center text-muted-foreground">
                 No pending approvals
               </TableCell>
             </TableRow>
@@ -238,7 +246,7 @@ export function SupervisorPage() {
               <TableCell>{a.request.payment_method}</TableCell>
               <TableCell className="text-right">
                 {a.status === 'processing' ? (
-                  <span className="text-muted-foreground text-sm">Processing…</span>
+                  <span className="text-sm text-muted-foreground">Processing…</span>
                 ) : (
                   <div className="flex justify-end gap-1">
                     <Button variant="ghost" size="sm" onClick={() => setTranscript(a.chat_id)}>

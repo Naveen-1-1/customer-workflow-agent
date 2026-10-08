@@ -42,7 +42,7 @@ function RouteError() {
       <p className="text-muted-foreground">
         Start it with <code>make dev</code> (or <code>make dev-api</code>), then reload.
       </p>
-      {error?.message && <p className="text-muted-foreground mt-2">{error.message}</p>}
+      {error?.message && <p className="mt-2 text-muted-foreground">{error.message}</p>}
     </div>
   )
 }

@@ -3,7 +3,11 @@ import { api, ApiError } from '@/api/client'
 import { chatLoader } from './router'
 
 const load = (url: string) =>
-  chatLoader({ request: new Request(url), params: {}, context: {} } as never) as Promise<Response | null>
+  chatLoader({
+    request: new Request(url),
+    params: {},
+    context: {},
+  } as never) as Promise<Response | null>
 
 describe('chatLoader', () => {
   afterEach(() => vi.restoreAllMocks())

@@ -13,14 +13,20 @@ import { usd } from '@/lib/format'
 export const LAST_CHAT_KEY = 'cwa:lastChatId'
 export const BUSY_TEXT = "We're busy right now, please try again in a minute."
 
-function Notice({ children, tone = 'info' }: { children: React.ReactNode; tone?: 'info' | 'warn' }) {
+function Notice({
+  children,
+  tone = 'info',
+}: {
+  children: React.ReactNode
+  tone?: 'info' | 'warn'
+}) {
   return (
     <div
       role="status"
       className={
         tone === 'warn'
           ? 'rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900'
-          : 'bg-muted rounded-lg px-3 py-2 text-sm'
+          : 'rounded-lg bg-muted px-3 py-2 text-sm'
       }
     >
       {children}
@@ -72,8 +78,8 @@ export function ChatPage() {
 
       {meta && !meta.llm_configured && (
         <Notice tone="warn">
-          NVIDIA_API_KEY isn't set, so the agent can't understand messages yet. Add it to .env
-          and restart the backend.
+          NVIDIA_API_KEY isn't set, so the agent can't understand messages yet. Add it to .env and
+          restart the backend.
         </Notice>
       )}
 
@@ -92,7 +98,7 @@ export function ChatPage() {
         ) : view ? (
           <MessageList messages={messages} typing={busy} />
         ) : (
-          <p className="text-muted-foreground text-sm">Connecting…</p>
+          <p className="text-sm text-muted-foreground">Connecting…</p>
         )}
       </main>
 
@@ -133,7 +139,9 @@ export function ChatPage() {
       {!refused && !view?.ended && !state.reset && !state.notFound && (
         <Composer
           disabled={!canType}
-          placeholder={pending?.type === 'supervisor_approval' ? 'Waiting for approval…' : undefined}
+          placeholder={
+            pending?.type === 'supervisor_approval' ? 'Waiting for approval…' : undefined
+          }
           onSend={send}
         />
       )}

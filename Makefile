@@ -2,7 +2,7 @@ VENV := .venv/bin
 NPM := npm --prefix frontend
 API := $(VENV)/uvicorn --factory customer_workflow_agent.api.app:create_app --host 127.0.0.1 --port 8000
 
-.PHONY: install dev dev-api dev-web serve test test-live test-web test-alerts lint build-web graph \
+.PHONY: install dev dev-api dev-web serve test test-live test-web test-alerts lint format build-web graph \
 	prompt-fingerprints metrics metrics-prometheus metrics-grafana fake-llm load reset-data
 
 install:  ## Python venv + backend deps, and frontend deps
@@ -35,10 +35,16 @@ test-web:  ## Frontend tests
 test-alerts:  ## Unit tests for the Prometheus alert rules (needs promtool: brew install prometheus)
 	promtool test rules ops/prometheus/alerts_test.yml
 
-lint:
+lint:  ## Check lint and formatting without changing files
 	$(VENV)/ruff check src tests load
 	$(VENV)/ruff format --check src tests load
 	$(NPM) run lint
+	$(NPM) run format:check
+
+format:  ## Apply lint autofixes and format Python and frontend code
+	$(VENV)/ruff check --fix src tests load
+	$(VENV)/ruff format src tests load
+	$(NPM) run format
 
 build-web:
 	$(NPM) run build

@@ -89,7 +89,12 @@ export function useChat(chatId: string | null) {
     async (text: string): Promise<boolean> => {
       const pending = state.view?.pending
       if (!chatId || !pending || pending.type !== 'await_customer') return false
-      const optimistic: Message = { id: `local-${Date.now()}`, role: 'customer', text, kind: 'text' }
+      const optimistic: Message = {
+        id: `local-${Date.now()}`,
+        role: 'customer',
+        text,
+        kind: 'text',
+      }
       dispatch({ type: 'submit', optimistic })
       try {
         await api.send(chatId, pending.interrupt_id, text)
