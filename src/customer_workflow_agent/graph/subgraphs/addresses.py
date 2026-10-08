@@ -1,7 +1,12 @@
 """Change a pending order's shipping address, or the account's default address."""
 
-from customer_workflow_agent.graph.action import Ask, Ctx, Plan, Ready
-from customer_workflow_agent.graph.subgraphs.base import merge_order_id, resolve_order, summary
+from customer_workflow_agent.graph.action import Ask, Check, Ctx, Found, Ready
+from customer_workflow_agent.graph.subgraphs.base import (
+    merge_order_id,
+    order_steps,
+    summary,
+    the_order,
+)
 from customer_workflow_agent.llm.schemas import AddressTurn
 from customer_workflow_agent.resolve.addresses import complete_address, merge_fields, same_address
 from customer_workflow_agent.store.models import UserAddress
@@ -40,10 +45,28 @@ def _new_address(slots: dict, ctx: Ctx, current: UserAddress, what: str) -> User
     return address
 
 
+def check_new_shipping_address(slots: dict, found: dict, ctx: Ctx) -> Check:
+    """A complete address, different from where the order ships now."""
+    new = _new_address(slots, ctx, the_order(found, ctx).address, "shipping address")
+    return new if isinstance(new, Ask) else Found({"address": new.model_dump()})
+
+
+def check_new_default_address(slots: dict, found: dict, ctx: Ctx) -> Check:
+    """A complete address, different from the current default."""
+    slots = {**slots, "use_profile_address": False}
+    new = _new_address(slots, ctx, ctx.user.address, "default address")
+    return new if isinstance(new, Ask) else Found({"address": new.model_dump()})
+
+
 class ModifyOrderAddress:
     name = "modify_order_address"
     turn_schema = AddressTurn
     reminder = None
+    needs_approval_step = False
+    steps = (
+        *order_steps("modify_order_address"),
+        ("check_new_address", check_new_shipping_address),
+    )
 
     def merge(self, slots, turn, text, ctx):
         return _merge_address(merge_order_id(slots, turn, text), turn)
@@ -51,14 +74,9 @@ class ModifyOrderAddress:
     def catalog(self, slots, ctx):
         return None
 
-    def plan(self, slots, ctx: Ctx) -> Plan:
-        order, other = resolve_order(self.name, slots, ctx)
-        if other:
-            return other
-        assert order is not None
-        new = _new_address(slots, ctx, order.address, "shipping address")
-        if isinstance(new, Ask):
-            return new
+    def prepare(self, slots, found, ctx: Ctx) -> Ready:
+        order = the_order(found, ctx)
+        new = UserAddress(**found["address"])
         return Ready(
             summary=summary(
                 f"Change shipping address for order {order.order_id}",
@@ -80,6 +98,8 @@ class ModifyDefaultAddress:
     name = "modify_default_address"
     turn_schema = AddressTurn
     reminder = None
+    needs_approval_step = False
+    steps = (("check_new_address", check_new_default_address),)
 
     def merge(self, slots, turn, text, ctx):
         return _merge_address(slots, turn)
@@ -87,12 +107,8 @@ class ModifyDefaultAddress:
     def catalog(self, slots, ctx):
         return None
 
-    def plan(self, slots, ctx: Ctx) -> Plan:
-        if slots.get("use_profile_address"):
-            slots = {**slots, "use_profile_address": False}
-        new = _new_address(slots, ctx, ctx.user.address, "default address")
-        if isinstance(new, Ask):
-            return new
+    def prepare(self, slots, found, ctx: Ctx) -> Ready:
+        new = UserAddress(**found["address"])
         return Ready(
             summary=summary(
                 "Change your default address",

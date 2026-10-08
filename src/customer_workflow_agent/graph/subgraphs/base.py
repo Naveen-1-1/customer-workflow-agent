@@ -1,9 +1,10 @@
 """Helpers shared by the write subgraphs: finding the order, payment choices, summaries."""
 
-from customer_workflow_agent.graph.action import Ask, Ctx
+from customer_workflow_agent.graph.action import Ask, Check, Ctx, Found, Step
 from customer_workflow_agent.llm.schemas import Turn
 from customer_workflow_agent.policy.rules import (
     ACTION_VERB,
+    REQUIRED_STATUS,
     Denial,
     check_owner,
     check_status,
@@ -35,34 +36,60 @@ def merge_order_id(slots: dict, turn: Turn, text: str) -> dict:
     return slots
 
 
-def resolve_order(action: str, slots: dict, ctx: Ctx) -> tuple[Order | None, Ask | Denial | None]:
-    """The order to act on, or what to ask/deny instead."""
-    user_orders = ctx.store.get_user_orders(ctx.user.user_id)
-    candidates = eligible_orders(action, user_orders)
-    oid = slots.get("order_id")
-    preface = ""
-    if oid:
-        try:
-            order = ctx.store.get_order(oid)
-        except StoreError:
-            order = None
-        denial = check_owner(order, ctx.user.user_id, oid)
-        if denial is None:
-            assert order is not None
-            denial = check_status(action, order)
-            return (order, None) if denial is None else (None, denial)
-        preface = denial_text(denial.code, **denial.params)
+def find_order(action: str) -> Step:
+    """Which order: one the customer named and owns, or ask them to pick one of theirs.
+
+    An order on another account reads exactly like a missing one.
+    """
+
+    def step(slots: dict, found: dict, ctx: Ctx) -> Check:
+        candidates = eligible_orders(action, ctx.store.get_user_orders(ctx.user.user_id))
+        oid = slots.get("order_id")
+        preface = ""
+        if oid:
+            try:
+                order = ctx.store.get_order(oid)
+            except StoreError:
+                order = None
+            denial = check_owner(order, ctx.user.user_id, oid)
+            if denial is None:
+                return Found({"order_id": oid})
+            preface = denial_text(denial.code, **denial.params)
+            if not candidates:
+                return denial
         if not candidates:
-            return None, denial
-    if not candidates:
-        return None, Denial("no_eligible_orders", {"action_verb": ACTION_VERB[action]})
-    return None, Ask(
-        question=ORDER_QUESTION[action],
-        preface=preface,
-        details=F.numbered([F.order_summary_line(o) for o in candidates]),
-        slot="order_id",
-        choices={"kind": "order", "values": [o.order_id for o in candidates], "index": None},
-    )
+            return Denial("no_eligible_orders", {"action_verb": ACTION_VERB[action]})
+        return Ask(
+            question=ORDER_QUESTION[action],
+            preface=preface,
+            details=F.numbered([F.order_summary_line(o) for o in candidates]),
+            slot="order_id",
+            choices={"kind": "order", "values": [o.order_id for o in candidates], "index": None},
+        )
+
+    return step
+
+
+def check_order_status(action: str) -> Step:
+    """Pending for cancel/modify, delivered for return/exchange (policy)."""
+
+    def step(slots: dict, found: dict, ctx: Ctx) -> Check:
+        return check_status(action, the_order(found, ctx)) or Found()
+
+    return step
+
+
+def order_steps(action: str) -> list[tuple[str, Step]]:
+    """find_order → check_pending / check_delivered."""
+    return [
+        ("find_order", find_order(action)),
+        (f"check_{REQUIRED_STATUS[action]}", check_order_status(action)),
+    ]
+
+
+def the_order(found: dict, ctx: Ctx) -> Order:
+    """The order `find_order` settled on."""
+    return ctx.store.get_order(found["order_id"])
 
 
 def pick_payment(

@@ -27,6 +27,11 @@ A customer opens the chat page and types. The backend walks a flowchart:
   - **Reject:** the customer sees the note, is offered a human agent, and further returns on that order are blocked until the demo is reset.
 - **Every fact comes from fixed templates:** ids, amounts, statuses and results. The LLM never sees other customers' data, and anything it extracts (order numbers, emails) must appear in what the customer actually typed.
 
+Each change request runs its policy checks as named steps, so the graph reads like the rules,
+for example `cancel_order: find_order → check_pending → check_reason → prepare_summary →
+confirm → execute`. Only `return_items` has the supervisor-approval path. `make graph` re-exports
+the full diagram to [`docs/workflow-graph.mmd`](docs/workflow-graph.mmd) from the code.
+
 All policy rules from [`data/policy.md`](data/policy.md) are enforced in code. For example:
 - verification comes first
 - customers can only act on their own orders
@@ -88,6 +93,7 @@ make test       # backend: store, policy, resolution, every flow, API (no networ
 make test-web   # frontend (Vitest)
 make test-live  # live NVIDIA checks, needs NVIDIA_API_KEY
 make lint
+make graph     # re-export docs/workflow-graph.mmd from the compiled graph
 ```
 
 **What the backend tests cover:**
@@ -108,7 +114,7 @@ src/customer_workflow_agent/
   resolve/                "the blue one", "my Visa", addresses → concrete ids
   llm/                    NVIDIA models, schemas, prompts, retries/fallback, reply guard
   templates/              every customer-facing fact and wording
-  graph/                  parent graph, shared write flow, 9 subgraphs
+  graph/                  parent graph, shared write flow, 9 subgraphs (each check a named node)
   api/                    FastAPI endpoints, chat runner, live updates (SSE)
 frontend/                 React (Vite + TypeScript + shadcn/ui): chat and supervisor pages
 tests/

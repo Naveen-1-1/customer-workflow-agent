@@ -3,10 +3,15 @@ mistake'; refund to the original payment methods, gift cards immediately)."""
 
 from collections import defaultdict
 
-from customer_workflow_agent.graph.action import Ask, Ctx, Plan, Ready
-from customer_workflow_agent.graph.subgraphs.base import merge_order_id, resolve_order, summary
+from customer_workflow_agent.graph.action import Ask, Check, Ctx, Found, Ready
+from customer_workflow_agent.graph.subgraphs.base import (
+    merge_order_id,
+    order_steps,
+    summary,
+    the_order,
+)
 from customer_workflow_agent.llm.schemas import CancelTurn
-from customer_workflow_agent.policy.rules import Denial, check_cancel_reason
+from customer_workflow_agent.policy.rules import check_cancel_reason
 from customer_workflow_agent.store.models import Order
 from customer_workflow_agent.templates import format as F
 from customer_workflow_agent.templates.messages import refund_line
@@ -19,10 +24,27 @@ def _refunds(order: Order) -> dict[str, float]:
     return {pm: round(a, 2) for pm, a in net.items() if round(a, 2) > 0}
 
 
+def check_reason(slots: dict, found: dict, ctx: Ctx) -> Check:
+    """Only 'no longer needed' or 'ordered by mistake' (policy)."""
+    reason = slots.get("reason")
+    if not reason:
+        return Ask(
+            question="Could you tell me why you'd like to cancel — is it no longer needed, "
+            "or was it ordered by mistake?",
+            slot="reason",
+        )
+    return check_cancel_reason(reason) or Found()
+
+
 class CancelOrder:
     name = "cancel_order"
     turn_schema = CancelTurn
     reminder = None
+    needs_approval_step = False
+    steps = (
+        *order_steps("cancel_order"),
+        ("check_reason", check_reason),
+    )
 
     def merge(self, slots, turn, text, ctx):
         slots = merge_order_id(slots, turn, text)
@@ -33,20 +55,9 @@ class CancelOrder:
     def catalog(self, slots, ctx):
         return None
 
-    def plan(self, slots, ctx: Ctx) -> Plan:
-        order, other = resolve_order(self.name, slots, ctx)
-        if other:
-            return other
-        assert order is not None
-        reason = slots.get("reason")
-        if not reason:
-            return Ask(
-                question="Could you tell me why you'd like to cancel — is it no longer needed, "
-                "or was it ordered by mistake?",
-                slot="reason",
-            )
-        if denial := check_cancel_reason(reason):
-            return denial
+    def prepare(self, slots, found, ctx: Ctx) -> Ready:
+        order = the_order(found, ctx)
+        reason = slots["reason"]
         refunds = _refunds(order)
         pms = ctx.user.payment_methods
         lines = [F.item_text(i) for i in order.items]
@@ -79,4 +90,3 @@ class CancelOrder:
 
 
 SPEC = CancelOrder()
-_ = Denial  # re-exported type for plan results

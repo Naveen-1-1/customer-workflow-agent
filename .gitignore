@@ -29,3 +29,6 @@ frontend/coverage/
 # Claude local files
 .claude/settings.local.json
 .claude/.cc-writes/
+
+# Local notes
+ISSUES.md

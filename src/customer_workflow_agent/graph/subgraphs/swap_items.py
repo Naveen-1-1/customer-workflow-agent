@@ -2,13 +2,14 @@
 or exchange a delivered order's items. Policy: same product, different option, available;
 a payment method for the price difference; a gift card must cover it; all items in one go."""
 
-from customer_workflow_agent.graph.action import Ask, Ctx, Plan, Ready
+from customer_workflow_agent.graph.action import Ask, Check, Ctx, Found, Ready
 from customer_workflow_agent.graph.subgraphs.base import (
     catalog_for,
     merge_order_id,
+    order_steps,
     pick_payment,
-    resolve_order,
     summary,
+    the_order,
 )
 from customer_workflow_agent.llm.schemas import ItemsTurn
 from customer_workflow_agent.policy.rules import Denial, gift_card_covers
@@ -55,14 +56,31 @@ def _merge_changes(existing: list[dict], new: list) -> list[dict]:
     return changes
 
 
+def _price_difference(order: Order, found: dict, ctx: Ctx) -> float:
+    diff = 0.0
+    for line, new_id in zip(found["lines"], found["new_item_ids"], strict=True):
+        old = order.items[line]
+        diff += ctx.store.get_product(old.product_id).variants[new_id].price - old.price
+    return round(diff, 2)
+
+
 class SwapItems:
     turn_schema = ItemsTurn
+
+    needs_approval_step = False
 
     def __init__(self, name: str, fn: str, reminder: str, verb: str):
         self.name = name
         self.fn = fn
         self.reminder = reminder
         self.verb = verb
+        self.steps = (
+            *order_steps(name),
+            ("find_items", self.find_items),
+            ("choose_new_options", self.choose_new_options),
+            ("choose_payment_method", self.choose_payment_method),
+            ("check_gift_card_balance", self.check_gift_card_balance),
+        )
 
     def merge(self, slots, turn, text, ctx):
         slots = dict(merge_order_id(slots, turn, text))
@@ -82,39 +100,64 @@ class SwapItems:
             return None
         return catalog_for(order, ctx) if order.user_id == ctx.user.user_id else None
 
-    def _resolve_change(
-        self, order: Order, idx: int, change: dict, used: set[int], ctx: Ctx
-    ) -> tuple[int, str] | Ask | Denial:
-        item_list = F.numbered([F.item_text(i) for i in order.items])
-        line = change.get("line")
-        if line is None:
-            m = resolve_lines(order, {**change["item"], "quantity": 1}, used)
-            if m.status == "ambiguous":
-                return Ask(
-                    question=f"Which {change['item']['product']} do you mean?",
-                    details=F.numbered([F.item_text(order.items[i]) for i in m.lines]),
-                    slot=f"line{idx}",
-                    choices={"kind": "line", "values": m.lines, "index": idx},
-                )
-            if m.status == "none":
-                return Ask(
-                    question=f"Which item would you like to {self.verb}? Its items are:",
-                    preface=f'I couldn\'t find "{change["item"]["product"]}" in order '
-                    f"{order.order_id}.",
-                    details=item_list,
-                    slot=f"line{idx}",
-                )
-            line = m.lines[0]
-        item = order.items[line]
+    def find_items(self, slots: dict, found: dict, ctx: Ctx) -> Check:
+        """Which line of the order each change refers to ("the keyboard")."""
+        order = the_order(found, ctx)
+        changes = slots.get("changes") or []
+        if not changes:
+            return Ask(
+                question=f"Which items in order {order.order_id} would you like to {self.verb}, "
+                "and what would you like each changed to? Its items are:",
+                details=F.numbered([F.item_text(i) for i in order.items]),
+                slot="changes",
+            )
+        used: set[int] = set()
+        lines: list[int] = []
+        for idx, change in enumerate(changes):
+            line = change.get("line")
+            if line is None:
+                m = resolve_lines(order, {**change["item"], "quantity": 1}, used)
+                if m.status == "ambiguous":
+                    return Ask(
+                        question=f"Which {change['item']['product']} do you mean?",
+                        details=F.numbered([F.item_text(order.items[i]) for i in m.lines]),
+                        slot=f"line{idx}",
+                        choices={"kind": "line", "values": m.lines, "index": idx},
+                    )
+                if m.status == "none":
+                    return Ask(
+                        question=f"Which item would you like to {self.verb}? Its items are:",
+                        preface=f'I couldn\'t find "{change["item"]["product"]}" in order '
+                        f"{order.order_id}.",
+                        details=F.numbered([F.item_text(i) for i in order.items]),
+                        slot=f"line{idx}",
+                    )
+                line = m.lines[0]
+            used.add(line)
+            lines.append(line)
+        return Found({"lines": lines})
+
+    def choose_new_options(self, slots: dict, found: dict, ctx: Ctx) -> Check:
+        """An available variant of the same product, different from the current one."""
+        order = the_order(found, ctx)
+        new_ids: list[str] = []
+        for idx, (change, line) in enumerate(zip(slots["changes"], found["lines"], strict=True)):
+            r = self._new_option(order.items[line], idx, change, ctx)
+            if not isinstance(r, str):
+                return r
+            new_ids.append(r)
+        return Found({"new_item_ids": new_ids})
+
+    def _new_option(self, item, idx: int, change: dict, ctx: Ctx) -> str | Ask | Denial:
         product = ctx.store.get_product(item.product_id)
         if change.get("new_item_id") in product.variants:
-            return line, change["new_item_id"]
+            return change["new_item_id"]
         schema = option_schema(product)
         options_help = "\n".join(f"- {k}: {', '.join(v)}" for k, v in schema.items())
         vm = resolve_variant(product, item, change.get("desired") or [])
         if vm.status == "ok":
             assert vm.item_id
-            return line, vm.item_id
+            return vm.item_id
         if vm.status == "need_desired":
             return Ask(
                 question=f"What would you like your {F.item_text(item)} changed to? "
@@ -166,60 +209,47 @@ class SwapItems:
             choices={"kind": "variant", "values": vm.item_ids, "index": idx},
         )
 
-    def plan(self, slots, ctx: Ctx) -> Plan:
-        order, other = resolve_order(self.name, slots, ctx)
-        if other:
-            return other
-        assert order is not None
-        changes = slots.get("changes") or []
-        if not changes:
-            return Ask(
-                question=f"Which items in order {order.order_id} would you like to {self.verb}, "
-                "and what would you like each changed to? Its items are:",
-                details=F.numbered([F.item_text(i) for i in order.items]),
-                slot="changes",
-            )
-        used: set[int] = set()
-        swaps: list[tuple[int, str]] = []
-        for idx, change in enumerate(changes):
-            r = self._resolve_change(order, idx, change, used, ctx)
-            if not isinstance(r, tuple):
-                return r
-            used.add(r[0])
-            swaps.append(r)
-
-        lines, diff = [], 0.0
-        for line, new_id in swaps:
-            old = order.items[line]
-            new = ctx.store.get_product(old.product_id).variants[new_id]
-            diff += new.price - old.price
-            lines.append(
-                f"{old.name}: {F.options_text(old.options)} → {F.options_text(new.options)}"
-                f" ({F.usd(old.price)} → {F.usd(new.price)})"
-            )
-        diff = round(diff, 2)
-
+    def choose_payment_method(self, slots: dict, found: dict, ctx: Ctx) -> Check:
+        """The customer names the method that pays or receives the price difference."""
         pm_id, ask = pick_payment(
             slots,
             ctx.user,
             allowed=None,
             question="Which payment method should be used for any price difference?",
         )
-        if ask:
-            return ask
-        assert pm_id is not None
-        pm = ctx.user.payment_methods[pm_id]
-        if diff > 0 and not gift_card_covers(pm, diff):
-            others = [p for p in ctx.user.payment_methods if p != pm_id]
-            _, ask = pick_payment(
-                {},
-                ctx.user,
-                allowed=others or None,
-                preface=f"That gift card's balance doesn't cover the {F.usd(diff)} difference.",
-                question="Which payment method should be used instead?",
+        return ask or Found({"pm_id": pm_id})
+
+    def check_gift_card_balance(self, slots: dict, found: dict, ctx: Ctx) -> Check:
+        """A gift card must cover any extra charge (policy)."""
+        diff = _price_difference(the_order(found, ctx), found, ctx)
+        pm_id = found["pm_id"]
+        if diff <= 0 or gift_card_covers(ctx.user.payment_methods[pm_id], diff):
+            return Found()
+        others = [p for p in ctx.user.payment_methods if p != pm_id]
+        _, ask = pick_payment(
+            {},
+            ctx.user,
+            allowed=others or None,
+            preface=f"That gift card's balance doesn't cover the {F.usd(diff)} difference.",
+            question="Which payment method should be used instead?",
+        )
+        assert ask
+        return ask
+
+    def prepare(self, slots: dict, found: dict, ctx: Ctx) -> Ready:
+        order = the_order(found, ctx)
+        swaps = list(zip(found["lines"], found["new_item_ids"], strict=True))
+        lines = []
+        for line, new_id in swaps:
+            old = order.items[line]
+            new = ctx.store.get_product(old.product_id).variants[new_id]
+            lines.append(
+                f"{old.name}: {F.options_text(old.options)} → {F.options_text(new.options)}"
+                f" ({F.usd(old.price)} → {F.usd(new.price)})"
             )
-            assert ask
-            return ask
+        diff = _price_difference(order, found, ctx)
+        pm_id = found["pm_id"]
+        pm = ctx.user.payment_methods[pm_id]
         if diff > 0:
             lines.append(f"Price difference: charge {F.usd(diff)} to your {F.pm_text(pm)}")
             amount, label = diff, "Charge"

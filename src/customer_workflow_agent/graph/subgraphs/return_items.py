@@ -1,26 +1,96 @@
 """Return items from a delivered order (policy: status delivered; refund to the original
 payment method or an existing gift card). Large returns may need supervisor approval."""
 
-from customer_workflow_agent.graph.action import Ask, Ctx, Plan, Ready
+from customer_workflow_agent.graph.action import Ask, Check, Ctx, Found, Ready
 from customer_workflow_agent.graph.subgraphs.base import (
     catalog_for,
     merge_order_id,
+    order_steps,
     pick_payment,
-    resolve_order,
     summary,
+    the_order,
 )
 from customer_workflow_agent.llm.schemas import ReturnTurn
 from customer_workflow_agent.policy.rules import Denial, refund_destinations
 from customer_workflow_agent.resolve.items import resolve_lines
 from customer_workflow_agent.resolve.text import norm
 from customer_workflow_agent.templates import format as F
-from customer_workflow_agent.templates import messages as M
+
+
+def check_returns_not_blocked(slots: dict, found: dict, ctx: Ctx) -> Check:
+    """No more returns on an order after a supervisor rejected one."""
+    order_id = found["order_id"]
+    if ctx.store.returns_blocked(order_id):
+        return Denial("returns_blocked", {"order_id": order_id})
+    return Found()
+
+
+def find_items(slots: dict, found: dict, ctx: Ctx) -> Check:
+    """Which lines of the order the customer means ("the watch", "everything")."""
+    order = the_order(found, ctx)
+    item_list = F.numbered([F.item_text(i) for i in order.items])
+    lines: list[int] = []
+    if slots.get("all_items"):
+        lines = list(range(len(order.items)))
+    else:
+        for idx, entry in enumerate(slots.get("items") or []):
+            if entry.get("lines") is not None:
+                lines += [i for i in entry["lines"] if i not in lines]
+                continue
+            m = resolve_lines(order, entry["ref"], set(lines))
+            if m.status == "ok":
+                lines += m.lines
+            elif m.status == "ambiguous":
+                return Ask(
+                    question=f"Which {entry['ref']['product']} would you like to return?",
+                    details=F.numbered([F.item_text(order.items[i]) for i in m.lines]),
+                    slot="items",
+                    choices={"kind": "return_line", "values": m.lines, "index": idx},
+                )
+            else:
+                return Ask(
+                    question="Which items would you like to return? Its items are:",
+                    preface=f'I couldn\'t find "{entry["ref"]["product"]}" in order '
+                    f"{order.order_id}.",
+                    details=item_list,
+                    slot="items",
+                )
+    if not lines:
+        return Ask(
+            question="Which items from this order would you like to return?",
+            details=item_list,
+            slot="items",
+        )
+    return Found({"lines": sorted(lines)})
+
+
+def choose_refund_method(slots: dict, found: dict, ctx: Ctx) -> Check:
+    """Refunds go to the original payment method or an existing gift card (policy)."""
+    pm_id, ask = pick_payment(
+        slots,
+        ctx.user,
+        allowed=refund_destinations(the_order(found, ctx), ctx.user),
+        slot="refund_to",
+        picked_key="refund_pm_id",
+        ref_key="refund_to",
+        choice_kind="refund",
+        question="Where should the refund go? It can go to the original payment method or "
+        "a gift card.",
+    )
+    return ask or Found({"pm_id": pm_id})
 
 
 class ReturnItems:
     name = "return_items"
     turn_schema = ReturnTurn
     reminder = None
+    needs_approval_step = True  # large refunds may wait for a supervisor
+    steps = (
+        *order_steps("return_items"),
+        ("check_returns_not_blocked", check_returns_not_blocked),
+        ("find_items", find_items),
+        ("choose_refund_method", choose_refund_method),
+    )
 
     def merge(self, slots, turn, text, ctx):
         slots = merge_order_id(slots, turn, text)
@@ -59,63 +129,9 @@ class ReturnItems:
             return None
         return catalog_for(order, ctx) if order.user_id == ctx.user.user_id else None
 
-    def plan(self, slots, ctx: Ctx) -> Plan:
-        order, other = resolve_order(self.name, slots, ctx)
-        if other:
-            return other
-        assert order is not None
-        if ctx.store.returns_blocked(order.order_id):
-            return Denial("returns_blocked", {"order_id": order.order_id})
-
-        item_list = F.numbered([F.item_text(i) for i in order.items])
-        lines: list[int] = []
-        if slots.get("all_items"):
-            lines = list(range(len(order.items)))
-        else:
-            for idx, entry in enumerate(slots.get("items") or []):
-                if entry.get("lines") is not None:
-                    lines += [i for i in entry["lines"] if i not in lines]
-                    continue
-                m = resolve_lines(order, entry["ref"], set(lines))
-                if m.status == "ok":
-                    lines += m.lines
-                elif m.status == "ambiguous":
-                    return Ask(
-                        question=f"Which {entry['ref']['product']} would you like to return?",
-                        details=F.numbered([F.item_text(order.items[i]) for i in m.lines]),
-                        slot="items",
-                        choices={"kind": "return_line", "values": m.lines, "index": idx},
-                    )
-                else:
-                    return Ask(
-                        question="Which items would you like to return? Its items are:",
-                        preface=f'I couldn\'t find "{entry["ref"]["product"]}" in order '
-                        f"{order.order_id}.",
-                        details=item_list,
-                        slot="items",
-                    )
-        if not lines:
-            return Ask(
-                question="Which items from this order would you like to return?",
-                details=item_list,
-                slot="items",
-            )
-
-        allowed = refund_destinations(order, ctx.user)
-        pm_id, ask = pick_payment(
-            slots,
-            ctx.user,
-            allowed=allowed,
-            slot="refund_to",
-            picked_key="refund_pm_id",
-            ref_key="refund_to",
-            choice_kind="refund",
-            question="Where should the refund go? It can go to the original payment method or "
-            "a gift card.",
-        )
-        if ask:
-            return ask
-        assert pm_id is not None
+    def prepare(self, slots, found, ctx: Ctx) -> Ready:
+        order = the_order(found, ctx)
+        pm_id, lines = found["pm_id"], found["lines"]
         pm = ctx.user.payment_methods[pm_id]
         items = [order.items[i] for i in sorted(lines)]
         total = round(sum(i.price for i in items), 2)
@@ -160,4 +176,3 @@ class ReturnItems:
 
 
 SPEC = ReturnItems()
-_ = M

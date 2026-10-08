@@ -1,18 +1,19 @@
 """The shared flow of every subgraph that changes the store.
 
-    start → interpret (LLM) → plan (code: every policy check)
-      plan → ask → wait (pause) → interpret → plan …
-      plan → deny → finish
-      plan → confirm (popup pause)
-        yes → approval gate (large returns) → supervisor (pause)
-                → rejected → block returns + offer a human (popup)
-            → execute (store write) → finish
+    start → interpret (LLM) → <each policy check, one named node per check> → prepare_summary
+      any check → ask → wait (pause) → interpret → first check again …
+      any check → deny → finish
+      prepare_summary → confirm (popup pause)
+        yes → execute (store write) → finish
+              (returns only: approval_gate → supervisor (pause) → rejected → block + offer human)
         no  → back to wait
 
-`plan` builds the popup summary and the store call from the same data, so the popup shows
+Each request type lists its checks in order (`steps`), so the graph shows what it checks.
+`prepare_summary` builds the popup and the store call from the same data, so the popup shows
 exactly what `execute` writes. Nothing writes before the popup's yes.
 """
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -70,7 +71,14 @@ class Ready:
     approval: dict | None = None  # ApprovalRequest, for returns
 
 
-Plan = Ask | Denial | Ready
+@dataclass
+class Found:
+    """A check passed. `values` are facts later checks need (order id, item lines, method)."""
+
+    values: dict = field(default_factory=dict)
+
+
+Check = Found | Ask | Denial
 
 
 @dataclass
@@ -81,14 +89,19 @@ class Ctx:
     request: Request
 
 
+Step = Callable[[dict, dict, Ctx], Check]  # (slots, found so far, ctx) -> result
+
+
 class ActionSpec(Protocol):
     name: str
     turn_schema: type[Turn]
     reminder: str | None
+    needs_approval_step: bool  # only returns can need a supervisor
+    steps: Sequence[tuple[str, Step]]  # the policy checks, in order; each becomes a named node
 
     def merge(self, slots: dict, turn: Turn, text: str, ctx: Ctx) -> dict: ...
 
-    def plan(self, slots: dict, ctx: Ctx) -> Plan: ...
+    def prepare(self, slots: dict, found: dict, ctx: Ctx) -> Ready: ...
 
     def catalog(self, slots: dict, ctx: Ctx) -> list[dict] | None: ...
 
@@ -129,6 +142,8 @@ def run_call(store: RetailStore, call: dict, op_id: str) -> object:
 
 def build_action_subgraph(spec: ActionSpec, deps: Deps):
     settings = deps.settings
+    step_names = [name for name, _ in spec.steps]
+    first_step = step_names[0]
 
     def ctx(state: ChatState) -> Ctx:
         return Ctx(deps, deps.store, deps.store.get_user(state["user_id"]), state["current"])
@@ -190,7 +205,7 @@ def build_action_subgraph(spec: ActionSpec, deps: Deps):
             )
         except LLMUnavailable:
             if first:
-                return {"work": work, "route": "plan"}
+                return {"work": work, "route": first_step}
             intent = keyword_intent(text)
             if intent == "skip":
                 return {"work": work, "messages": [agent_msg(M.SKIPPED)], "route": "dropped"}
@@ -201,7 +216,7 @@ def build_action_subgraph(spec: ActionSpec, deps: Deps):
                     "work": work,
                     "queue": enqueue(state.get("queue") or [], [transfer_request(text)]),
                     "messages": [agent_msg(M.QUEUED)],
-                    "route": "plan",
+                    "route": first_step,
                 }
             return {"work": work, "messages": [agent_msg(M.LLM_TROUBLE)], "route": "wait"}
 
@@ -232,22 +247,39 @@ def build_action_subgraph(spec: ActionSpec, deps: Deps):
         slots = spec.merge(slots, turn, text, c)
         work["slots"] = slots
         work["choices"] = None
-        return {**update, "work": work, "messages": msgs, "route": "plan"}
+        return {**update, "work": work, "messages": msgs, "route": first_step}
 
-    async def plan(state: ChatState) -> dict:
+    def check_node(index: int, step: Step):
+        """One policy check as a node: pass → next check, else ask / deny / drop."""
+        nxt = step_names[index + 1] if index + 1 < len(step_names) else "prepare_summary"
+
+        async def node(state: ChatState) -> dict:
+            work = dict(state["work"])
+            found = {} if index == 0 else dict(work.get("found") or {})
+            result = step(work["slots"], found, ctx(state))
+            if isinstance(result, Denial):
+                work["denial"] = {"code": result.code, "params": result.params}
+                return {"work": work, "route": "deny"}
+            if isinstance(result, Ask):
+                asks = dict(work.get("asks") or {})
+                asks[result.slot] = asks.get(result.slot, 0) + 1
+                if asks[result.slot] > settings.max_asks_per_slot:
+                    return {
+                        "work": work,
+                        "messages": [agent_msg(M.TOO_MANY_ASKS)],
+                        "route": "dropped",
+                    }
+                work.update(asks=asks, ask=result.__dict__, choices=result.choices)
+                return {"work": work, "route": "ask"}
+            work["found"] = {**found, **result.values}
+            return {"work": work, "route": nxt}
+
+        return node
+
+    async def prepare_summary(state: ChatState) -> dict:
         work = dict(state["work"])
-        result = spec.plan(work["slots"], ctx(state))
-        if isinstance(result, Denial):
-            work["denial"] = {"code": result.code, "params": result.params}
-            return {"work": work, "route": "deny"}
-        if isinstance(result, Ask):
-            asks = dict(work.get("asks") or {})
-            asks[result.slot] = asks.get(result.slot, 0) + 1
-            if asks[result.slot] > settings.max_asks_per_slot:
-                return {"work": work, "messages": [agent_msg(M.TOO_MANY_ASKS)], "route": "dropped"}
-            work.update(asks=asks, ask=result.__dict__, choices=result.choices)
-            return {"work": work, "route": "ask"}
-        work["ready"] = result.__dict__
+        ready = spec.prepare(work["slots"], work.get("found") or {}, ctx(state))
+        work["ready"] = ready.__dict__
         return {"work": work, "route": "confirm"}
 
     async def ask(state: ChatState) -> dict:
@@ -274,7 +306,7 @@ def build_action_subgraph(spec: ActionSpec, deps: Deps):
     async def after_confirm(state: ChatState) -> dict:
         work = dict(state["work"])
         if work.get("confirmed"):
-            return {"route": "approval_gate"}
+            return {"route": "approval_gate" if spec.needs_approval_step else "execute"}
         work["declines"] = work.get("declines", 0) + 1
         work["ready"] = None
         if work["declines"] >= settings.max_declines:
@@ -370,24 +402,28 @@ def build_action_subgraph(spec: ActionSpec, deps: Deps):
         return {"current": None, "work": {}}
 
     g = StateGraph(ChatState)
-    for name, fn in [
-        ("start", start),
-        ("interpret", interpret),
-        ("plan", plan),
+    nodes = [("start", start), ("interpret", interpret)]
+    nodes += [(name, check_node(i, step)) for i, (name, step) in enumerate(spec.steps)]
+    nodes += [
+        ("prepare_summary", prepare_summary),
         ("ask", ask),
         ("wait", wait_for_customer),
         ("deny", deny),
         ("confirm", confirm),
         ("after_confirm", after_confirm),
-        ("approval_gate", approval_gate),
-        ("approval", approval),
-        ("after_approval", after_approval),
-        ("offer_transfer", offer_transfer),
-        ("after_offer", after_offer),
         ("execute", execute),
         ("dropped", dropped),
         ("finish", finish),
-    ]:
+    ]
+    if spec.needs_approval_step:
+        nodes += [
+            ("approval_gate", approval_gate),
+            ("approval", approval),
+            ("after_approval", after_approval),
+            ("offer_transfer", offer_transfer),
+            ("after_offer", after_offer),
+        ]
+    for name, fn in nodes:
         g.add_node(name, fn)
 
     def route(state: ChatState) -> str:
@@ -395,18 +431,23 @@ def build_action_subgraph(spec: ActionSpec, deps: Deps):
 
     g.add_edge(START, "start")
     g.add_conditional_edges("start", route, ["interpret"])
-    g.add_conditional_edges("interpret", route, ["plan", "wait", "dropped"])
-    g.add_conditional_edges("plan", route, ["deny", "ask", "confirm", "dropped"])
+    g.add_conditional_edges("interpret", route, [first_step, "wait", "dropped"])
+    for i, name in enumerate(step_names):
+        nxt = step_names[i + 1] if i + 1 < len(step_names) else "prepare_summary"
+        g.add_conditional_edges(name, route, [nxt, "ask", "deny", "dropped"])
+    g.add_conditional_edges("prepare_summary", route, ["confirm"])
     g.add_conditional_edges("ask", route, ["wait"])
     g.add_edge("wait", "interpret")
     g.add_conditional_edges("deny", route, ["finish"])
     g.add_conditional_edges("confirm", route, ["after_confirm"])
-    g.add_conditional_edges("after_confirm", route, ["approval_gate", "wait", "finish"])
-    g.add_conditional_edges("approval_gate", route, ["approval", "execute"])
-    g.add_conditional_edges("approval", route, ["after_approval"])
-    g.add_conditional_edges("after_approval", route, ["execute", "offer_transfer"])
-    g.add_conditional_edges("offer_transfer", route, ["after_offer"])
-    g.add_conditional_edges("after_offer", route, ["finish"])
+    after_yes = "approval_gate" if spec.needs_approval_step else "execute"
+    g.add_conditional_edges("after_confirm", route, [after_yes, "wait", "finish"])
+    if spec.needs_approval_step:
+        g.add_conditional_edges("approval_gate", route, ["approval", "execute"])
+        g.add_conditional_edges("approval", route, ["after_approval"])
+        g.add_conditional_edges("after_approval", route, ["execute", "offer_transfer"])
+        g.add_conditional_edges("offer_transfer", route, ["after_offer"])
+        g.add_conditional_edges("after_offer", route, ["finish"])
     g.add_conditional_edges("execute", route, ["finish"])
     g.add_conditional_edges("dropped", route, ["finish"])
     g.add_edge("finish", END)
