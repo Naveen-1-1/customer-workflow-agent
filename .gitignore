@@ -1,0 +1,31 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Secrets and runtime data
+.env
+var/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+*.tsbuildinfo
+.npm-cache/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Claude local files
+.claude/settings.local.json
+.claude/.cc-writes/
