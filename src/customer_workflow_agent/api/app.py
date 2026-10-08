@@ -10,14 +10,18 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from prometheus_fastapi_instrumentator import Instrumentator
 
+from customer_workflow_agent.api import health
 from customer_workflow_agent.api.appdb import AppDB
 from customer_workflow_agent.api.events import EventBus
 from customer_workflow_agent.api.routes import router
 from customer_workflow_agent.api.runner import ApiError, ChatRunner
 from customer_workflow_agent.deps import Deps
 from customer_workflow_agent.graph.builder import build_graph
-from customer_workflow_agent.llm.service import LLMService, NvidiaLLMService, UnavailableLLM
+from customer_workflow_agent.llm.service import LLMService, RouterLLMService, UnavailableLLM
+from customer_workflow_agent.obs import metrics
+from customer_workflow_agent.obs.logs import ChatIdMiddleware, configure_logging
 from customer_workflow_agent.settings import PROJECT_ROOT, Settings, get_settings
 from customer_workflow_agent.store import FileBackend, RetailStore
 
@@ -38,7 +42,7 @@ def _default_llm(settings: Settings) -> tuple[LLMService, bool]:
     if settings.nvidia_api_key is None:
         log.warning("NVIDIA_API_KEY is not set: the agent will apologize instead of answering")
         return UnavailableLLM("NVIDIA_API_KEY is not set"), False
-    return NvidiaLLMService(settings), True
+    return RouterLLMService(settings), True
 
 
 def create_app(
@@ -47,6 +51,7 @@ def create_app(
     frontend_dist: Path | None = FRONTEND_DIST,
 ) -> FastAPI:
     settings = settings or get_settings()
+    configure_logging()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -68,14 +73,22 @@ def create_app(
                 await appdb.close()
 
     app = FastAPI(title="Customer workflow agent", lifespan=lifespan)
+    app.add_middleware(ChatIdMiddleware)
 
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError) -> JSONResponse:
         return JSONResponse(
-            status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message}}
+            status_code=exc.status,
+            content={"error": {"code": exc.code, "message": exc.message}},
+            headers=exc.headers,
         )
 
     app.include_router(router, prefix="/api")
+    app.include_router(health.router)
+    # HTTP request metrics; live-update streams stay open for minutes, so they're left out.
+    Instrumentator(excluded_handlers=["/metrics", "/healthz", "/readyz", ".*/events$"]).add(
+        metrics.HTTP
+    ).instrument(app)
 
     # Single-process demo: serve the built React app (npm run build) if it exists.
     if frontend_dist is not None and (frontend_dist / "index.html").exists():

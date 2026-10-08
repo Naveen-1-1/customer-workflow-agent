@@ -65,6 +65,9 @@ class Turn(Schema):
 
 class CancelTurn(Turn):
     reason: Literal["no longer needed", "ordered by mistake", "other"] | None
+    # The customer's own words that give the reason: `reason` is only kept if these appear in
+    # their message, so the model can't invent one (ISSUES.md #1).
+    reason_quote: str | None
 
 
 class AddressFields(Schema):

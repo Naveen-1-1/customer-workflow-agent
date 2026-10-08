@@ -1,107 +1,124 @@
 import asyncio
-from typing import Any
 
+import litellm
 import pytest
-from langchain_core.exceptions import OutputParserException
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from litellm.integrations.custom_logger import CustomLogger
+from litellm.router import Router
+from prometheus_client import REGISTRY
 
+from customer_workflow_agent.llm.client import FALLBACK, PRIMARY, build_router
 from customer_workflow_agent.llm.guard import safe_reply
 from customer_workflow_agent.llm.schemas import Classification
-from customer_workflow_agent.llm.structured import (
-    FatalLLMError,
-    LLMTimeout,
-    RateLimited,
-    TransientLLMError,
-    build_runnable,
-    classify_error,
-    parse_or_raise,
-    response_format,
-)
+from customer_workflow_agent.llm.service import Prompt, RouterLLMService
+from customer_workflow_agent.llm.structured import LLMUnavailable, parse_or_raise, response_format
+from customer_workflow_agent.settings import Settings
 
 GOOD = '{"requests": [], "goodbye": true, "about_other_person": false}'
+PROMPT = Prompt("system", "Customer message: bye", "bye")
 
 
-class ScriptModel(BaseChatModel):
-    """Returns (or raises) the scripted items in order and records request kwargs."""
+class Attempts(CustomLogger):
+    """Records every model call LiteLLM makes: (model group, error type or "ok")."""
 
-    script: list[Any]
-    seen_kwargs: list[dict]
+    def __init__(self) -> None:
+        self.seen: list[tuple[str, str]] = []
+        self.params: list[dict] = []
 
-    @property
-    def _llm_type(self) -> str:
-        return "script"
+    def _group(self, kwargs) -> str:
+        return (kwargs.get("litellm_params") or {}).get("metadata", {}).get("model_group", "?")
 
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
-        self.seen_kwargs.append(kwargs)
-        item = self.script.pop(0)
-        if isinstance(item, BaseException):
-            raise item
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=item))])
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        self.seen.append((self._group(kwargs), "ok"))
+        self.params.append(kwargs.get("optional_params") or {})
 
-
-def run(models, schema=Classification, attempts=3):
-    r = build_runnable(models, schema=schema, max_attempts=attempts, backoff_initial=0.001)
-    return r.ainvoke([HumanMessage("bye")])
+    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+        self.seen.append((self._group(kwargs), type(kwargs.get("exception")).__name__))
 
 
-async def test_parses_valid_json_and_sends_strict_schema():
-    m = ScriptModel(script=[GOOD], seen_kwargs=[])
-    out = await run([m])
+# LiteLLM copies callbacks into its own lists the first time it uses them, so one recorder is
+# registered for the whole module and cleared before each test.
+_ATTEMPTS = Attempts()
+
+
+@pytest.fixture
+def attempts(monkeypatch):
+    if _ATTEMPTS not in litellm.callbacks:
+        litellm.callbacks.append(_ATTEMPTS)
+    _ATTEMPTS.seen.clear()
+    _ATTEMPTS.params.clear()
+    monkeypatch.setattr(Router, "_time_to_sleep_before_retry", lambda *a, **k: 0)
+    return _ATTEMPTS
+
+
+def service(primary: dict, fallback: dict | None = None, **settings) -> RouterLLMService:
+    s = Settings(_env_file=None, nvidia_api_key="test", llm_requests_per_minute=6000, **settings)
+    router = build_router(s, {PRIMARY: primary, FALLBACK: fallback or {"mock_response": GOOD}})
+    return RouterLLMService(s, router=router)
+
+
+async def settle():
+    # LiteLLM runs its logging callbacks in the background.
+    await asyncio.sleep(0.2)
+
+
+async def test_parses_valid_json_and_turns_thinking_off(attempts):
+    out = await service({"mock_response": GOOD}).extract(Classification, PROMPT)
     assert isinstance(out, Classification) and out.goodbye
-    rf = m.seen_kwargs[0]["response_format"]
-    assert rf["type"] == "json_schema" and rf["json_schema"]["strict"] is True
+    await settle()
+    assert attempts.seen == [(PRIMARY, "ok")]
+    params = attempts.params[0]
+    assert params["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert params["temperature"] == 0.1
 
 
-async def test_bad_json_is_retried():
-    m = ScriptModel(script=["not json", '{"requests": []}', GOOD], seen_kwargs=[])
-    assert (await run([m])).goodbye
-    assert len(m.seen_kwargs) == 3
+@pytest.mark.parametrize("bad", ["not json", '{"requests": "oops"}'], ids=["not-json", "wrong"])
+async def test_bad_output_is_retried_then_fallback(attempts, bad):
+    out = await service({"mock_response": bad}).extract(Classification, PROMPT)
+    assert out.goodbye
+    await settle()
+    assert [g for g, _ in attempts.seen] == [PRIMARY] * 3 + [FALLBACK]
 
 
-async def test_rate_limit_retried_then_fallback_used():
-    primary = ScriptModel(script=[Exception("[429] Too Many Requests")] * 3, seen_kwargs=[])
-    fallback = ScriptModel(script=[GOOD], seen_kwargs=[])
-    assert (await run([primary, fallback])).goodbye
-    assert len(primary.seen_kwargs) == 3 and len(fallback.seen_kwargs) == 1
+@pytest.mark.parametrize("error", ["litellm.RateLimitError", "litellm.InternalServerError"])
+async def test_rate_limits_and_server_errors_are_retried_then_fallback(attempts, error):
+    out = await service({"mock_response": error}).extract(Classification, PROMPT)
+    assert out.goodbye
+    await settle()
+    assert attempts.seen[:3] == [(PRIMARY, attempts.seen[0][1])] * 3
+    assert attempts.seen[3] == (FALLBACK, "ok")
 
 
-async def test_fatal_error_skips_retries_but_falls_back():
-    primary = ScriptModel(script=[Exception("[400] Bad Request")], seen_kwargs=[])
-    fallback = ScriptModel(script=[GOOD], seen_kwargs=[])
-    assert (await run([primary, fallback])).goodbye
-    assert len(primary.seen_kwargs) == 1
+async def test_timeout_goes_straight_to_fallback(attempts):
+    llm = service({"mock_response": GOOD, "mock_timeout": True}, llm_timeout_s=0.05)
+    assert (await llm.extract(Classification, PROMPT)).goodbye
+    await settle()
+    assert attempts.seen == [(PRIMARY, "Timeout"), (FALLBACK, "ok")]
 
 
-async def test_everything_fails_raises():
-    primary = ScriptModel(script=["x"] * 2, seen_kwargs=[])
-    fallback = ScriptModel(script=["y"] * 2, seen_kwargs=[])
-    with pytest.raises(OutputParserException):
-        await run([primary, fallback], attempts=2)
+async def test_everything_failing_raises_unavailable(attempts):
+    llm = service(
+        {"mock_response": "litellm.InternalServerError"},
+        {"mock_response": "litellm.InternalServerError"},
+    )
+    with pytest.raises(LLMUnavailable):
+        await llm.extract(Classification, PROMPT)
 
 
-async def test_free_text_mode():
-    m = ScriptModel(script=["Sure — which order is it?"], seen_kwargs=[])
-    out = await run([m], schema=None)
+async def test_free_text_mode(attempts):
+    out = await service({"mock_response": "Sure — which order is it?"}).write(PROMPT)
     assert out == "Sure — which order is it?"
-    assert "response_format" not in m.seen_kwargs[0]
-
-
-def test_classify_error():
-    assert isinstance(classify_error(Exception("[429] slow down")), RateLimited)
-    assert isinstance(classify_error(Exception("[503] unavailable")), TransientLLMError)
-    assert isinstance(classify_error(TimeoutError()), LLMTimeout)
-    assert isinstance(classify_error(Exception("[401] Unauthorized")), FatalLLMError)
+    await settle()
+    assert "response_format" not in attempts.params[0]
+    assert attempts.params[0]["temperature"] == 0.5
 
 
 def test_parse_strips_code_fences():
     assert parse_or_raise(Classification, f"```json\n{GOOD}\n```").goodbye
 
 
-def test_response_format_forbids_extra_keys():
-    schema = response_format(Classification)["json_schema"]["schema"]
-    assert schema["additionalProperties"] is False
+def test_response_format_is_strict_and_forbids_extra_keys():
+    rf = response_format(Classification)["json_schema"]
+    assert rf["strict"] is True and rf["schema"]["additionalProperties"] is False
 
 
 @pytest.mark.parametrize(
@@ -120,22 +137,26 @@ def test_guard(text, ok):
     assert (safe_reply(text) is not None) == ok
 
 
-class SlowModel(ScriptModel):
-    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
-        self.seen_kwargs.append(kwargs)
-        await asyncio.sleep(1)
-        return self._generate(messages, **kwargs)
+def sample(name: str, **labels) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
-async def test_slow_primary_goes_straight_to_fallback():
-    slow = SlowModel(script=[GOOD] * 3, seen_kwargs=[])
-    fallback = ScriptModel(script=[GOOD], seen_kwargs=[])
-    r = build_runnable(
-        [slow, fallback],
-        schema=Classification,
-        max_attempts=3,
-        timeout_s=0.05,
-        backoff_initial=0.001,
+async def test_metrics_count_attempts_and_who_answered(attempts):
+    label = PROMPT.label
+    s = Settings(_env_file=None)
+    rate_limited = dict(model=s.llm_primary_model, prompt=label, outcome="rate_limited")
+    before = (
+        sample("llm_calls_total", **rate_limited),
+        sample("llm_requests_total", prompt=label, served_by="fallback"),
+        sample("llm_requests_total", prompt=label, served_by="none"),
     )
-    assert (await r.ainvoke([HumanMessage("bye")])).goodbye
-    assert len(slow.seen_kwargs) == 1  # not retried: a timeout hands over to the fallback
+    await service({"mock_response": "litellm.RateLimitError"}).extract(Classification, PROMPT)
+    with pytest.raises(LLMUnavailable):
+        await service(
+            {"mock_response": "litellm.InternalServerError"},
+            {"mock_response": "litellm.InternalServerError"},
+        ).extract(Classification, PROMPT)
+    await settle()
+    assert sample("llm_calls_total", **rate_limited) - before[0] == 3
+    assert sample("llm_requests_total", prompt=label, served_by="fallback") - before[1] == 1
+    assert sample("llm_requests_total", prompt=label, served_by="none") - before[2] == 1

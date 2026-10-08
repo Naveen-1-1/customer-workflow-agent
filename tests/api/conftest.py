@@ -18,6 +18,7 @@ from tests.graph.helpers import auth_ex, classified, make, req
 
 IVAN = "ivan.santos3158@example.com"
 IVAN_PENDING = "#W8770097"
+CANCEL = f"cancel {IVAN_PENDING}, it's no longer needed"
 RAJ = "raj.sanchez2046@example.com"
 RAJ_BIG = "#W1067251"
 
@@ -27,7 +28,11 @@ def scripted() -> ScriptedLLM:
     llm.on(AuthExtraction, IVAN, auth_ex(email=IVAN))
     llm.on(AuthExtraction, RAJ, auth_ex(email=RAJ))
     llm.on(Classification, "cancel", classified(req("cancel_order", IVAN_PENDING)))
-    llm.on(CancelTurn, "cancel", make(CancelTurn, reason="no longer needed"))
+    llm.on(
+        CancelTurn,
+        "cancel",
+        make(CancelTurn, reason="no longer needed", reason_quote="no longer needed"),
+    )
     llm.on(Classification, "return", classified(req("return_items", RAJ_BIG)))
     llm.on(
         ReturnTurn,

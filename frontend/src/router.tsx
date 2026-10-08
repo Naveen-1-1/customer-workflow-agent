@@ -1,5 +1,5 @@
 import { createBrowserRouter, redirect, useRouteError, type LoaderFunctionArgs } from 'react-router'
-import { api } from '@/api/client'
+import { api, ApiError } from '@/api/client'
 import { ChatPage, LAST_CHAT_KEY } from '@/pages/ChatPage'
 import { SupervisorPage } from '@/pages/SupervisorPage'
 
@@ -15,7 +15,7 @@ function lastChat(): string | null {
 export async function chatLoader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url)
   const wantsNew = url.searchParams.has('new')
-  if (url.searchParams.get('chat') && !wantsNew) return null
+  if ((url.searchParams.get('chat') || url.searchParams.has('busy')) && !wantsNew) return null
   const last = wantsNew ? null : lastChat()
   if (last) {
     try {
@@ -25,8 +25,13 @@ export async function chatLoader({ request }: LoaderFunctionArgs) {
       /* gone (e.g. after a reset): start a new one */
     }
   }
-  const chat = await api.createChat()
-  return redirect(`/?chat=${chat.chat_id}`)
+  try {
+    const chat = await api.createChat()
+    return redirect(`/?chat=${chat.chat_id}`)
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'at_capacity') return redirect('/?busy=1')
+    throw err
+  }
 }
 
 function RouteError() {

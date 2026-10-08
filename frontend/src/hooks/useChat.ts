@@ -10,6 +10,7 @@ export interface ChatState {
   submitting: boolean
   reset: boolean
   notFound: boolean
+  busy: boolean // the app was full and refused the last message
 }
 
 type Action =
@@ -18,6 +19,7 @@ type Action =
   | { type: 'failed' }
   | { type: 'reset' }
   | { type: 'not_found' }
+  | { type: 'busy' }
 
 export const initialChatState: ChatState = {
   view: null,
@@ -25,6 +27,7 @@ export const initialChatState: ChatState = {
   submitting: false,
   reset: false,
   notFound: false,
+  busy: false,
 }
 
 export function chatReducer(state: ChatState, action: Action): ChatState {
@@ -38,13 +41,20 @@ export function chatReducer(state: ChatState, action: Action): ChatState {
         submitting: action.view.running ? state.submitting : false,
       }
     case 'submit':
-      return { ...state, submitting: true, optimistic: action.optimistic ?? state.optimistic }
+      return {
+        ...state,
+        submitting: true,
+        busy: false,
+        optimistic: action.optimistic ?? state.optimistic,
+      }
     case 'failed':
       return { ...state, submitting: false, optimistic: null }
     case 'reset':
       return { ...state, reset: true }
     case 'not_found':
       return { ...state, notFound: true }
+    case 'busy':
+      return { ...state, busy: true }
   }
 }
 
@@ -61,6 +71,7 @@ export function useChat(chatId: string | null) {
     async (err: unknown) => {
       dispatch({ type: 'failed' })
       if (err instanceof ApiError && err.status === 404) dispatch({ type: 'not_found' })
+      else if (err instanceof ApiError && err.code === 'at_capacity') dispatch({ type: 'busy' })
       else if (chatId) {
         // e.g. 409: someone else answered first. Show the server's truth.
         try {

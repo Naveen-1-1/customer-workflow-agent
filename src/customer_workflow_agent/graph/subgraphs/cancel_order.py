@@ -1,6 +1,7 @@
 """Cancel a pending order (policy: status pending; reason 'no longer needed' or 'ordered by
 mistake'; refund to the original payment methods, gift cards immediately)."""
 
+import re
 from collections import defaultdict
 
 from customer_workflow_agent.graph.action import Ask, Check, Ctx, Found, Ready
@@ -12,6 +13,7 @@ from customer_workflow_agent.graph.subgraphs.base import (
 )
 from customer_workflow_agent.llm.schemas import CancelTurn
 from customer_workflow_agent.policy.rules import check_cancel_reason
+from customer_workflow_agent.resolve.ids import literal_in
 from customer_workflow_agent.store.models import Order
 from customer_workflow_agent.templates import format as F
 from customer_workflow_agent.templates.messages import refund_line
@@ -22,6 +24,31 @@ def _refunds(order: Order) -> dict[str, float]:
     for p in order.payment_history:
         net[p.payment_method_id] += p.amount if p.transaction_type == "payment" else -p.amount
     return {pm: round(a, 2) for pm, a in net.items() if round(a, 2) > 0}
+
+
+# A reason counts only if the customer's own words for it are in their message and actually say
+# it: models sometimes fill one in, or "quote" the whole request as the reason (ISSUES.md #1).
+_SAYS_REASON = {
+    "no longer needed": re.compile(
+        r"no longer|need(?!s? to\b)|any ?more|changed? (?:my|our) mind|(?:don'?t|do not|not|never) "
+        r"(?:want|use)|no use for",
+        re.I,
+    ),
+    "ordered by mistake": re.compile(
+        r"mistake|accident|wrong|error|didn'?t mean|unintentional|by chance", re.I
+    ),
+}
+_REQUEST_ECHO = re.compile(r"cancel|#?W\d{7}", re.I)
+
+
+def gave_reason(reason: str | None, quote: str | None, text: str) -> bool:
+    """Did the customer give this reason in `text`?"""
+    quote = literal_in(quote, text)
+    if not reason or quote is None:
+        return False
+    if reason in _SAYS_REASON:
+        return bool(_SAYS_REASON[reason].search(quote))
+    return not _REQUEST_ECHO.search(quote)  # "other": anything but the request itself
 
 
 def check_reason(slots: dict, found: dict, ctx: Ctx) -> Check:
@@ -48,7 +75,7 @@ class CancelOrder:
 
     def merge(self, slots, turn, text, ctx):
         slots = merge_order_id(slots, turn, text)
-        if turn.reason:
+        if gave_reason(turn.reason, turn.reason_quote, text):  # else check_reason asks
             slots = {**slots, "reason": turn.reason}
         return slots
 

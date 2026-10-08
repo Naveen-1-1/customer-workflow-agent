@@ -101,7 +101,11 @@ async def test_task_16_cancel_all_pending_and_return_watch(real_db):
         "cancel all",
         classified(req("cancel_order", all_eligible=True), req("return_items")),
     )
-    llm.on(CancelTurn, "cancel all", make(CancelTurn, reason="no longer needed"))
+    llm.on(
+        CancelTurn,
+        "cancel all",
+        make(CancelTurn, reason="no longer needed", reason_quote="I no longer need them"),
+    )
     llm.on(
         ReturnTurn,
         "cancel all",

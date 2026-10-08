@@ -4,6 +4,7 @@ import pytest
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from customer_workflow_agent.deps import Deps
+from customer_workflow_agent.graph.subgraphs.cancel_order import gave_reason
 from customer_workflow_agent.llm.fake import FailingLLM, ScriptedLLM
 from customer_workflow_agent.llm.schemas import (
     AddressFields,
@@ -52,8 +53,58 @@ async def verified_chat(db: WorkingDB, llm, email: str = IVAN, **overrides):
     return chat, store, backend
 
 
-def cancel_turn(text_reason=None, **kw):
-    return make(CancelTurn, reason=text_reason, **kw)
+# The words a customer uses for each reason in these tests (the agent keeps a reason only if
+# its quote is in the customer's message).
+QUOTES = {
+    "no longer needed": "no longer needed",
+    "ordered by mistake": "by mistake",
+    "other": "cheaper",
+}
+
+
+def cancel_turn(text_reason=None, quote=None, **kw):
+    return make(CancelTurn, reason=text_reason, reason_quote=quote or QUOTES.get(text_reason), **kw)
+
+
+@pytest.mark.parametrize(
+    "quote", [None, "I don't need it anymore"], ids=["no-quote", "quote-not-in-message"]
+)
+async def test_a_reason_the_customer_never_gave_is_not_used(real_db, quote):
+    # ISSUES.md #1: Lightning returned reason "no longer needed" for "please cancel order #W…".
+    llm = ivan_llm()
+    llm.on(Classification, "cancel", classified(req("cancel_order", IVAN_PENDING)))
+    llm.on(CancelTurn, "cancel", cancel_turn("no longer needed", quote=quote or ""))
+    chat, _, _ = await verified_chat(real_db, llm)
+    await chat.say(f"please cancel order {IVAN_PENDING}")
+    assert "why you'd like to cancel" in chat.last_agent()
+    assert chat.pause["type"] == "await_customer"
+
+
+@pytest.mark.parametrize(
+    "reason,quote,text,ok",
+    [
+        ("no longer needed", "no longer needed", "it's no longer needed", True),
+        ("no longer needed", "I don't need it", "cancel it, I don't need it", True),
+        ("no longer needed", "changed my mind", "I changed my mind", True),
+        ("no longer needed", "don't want it anymore", "I don't want it anymore", True),
+        ("ordered by mistake", "by accident", "I bought it by accident", True),
+        ("ordered by mistake", "ordered the wrong one", "I ordered the wrong one", True),
+        ("other", "found it cheaper", "cancel it because I found it cheaper", True),
+        # what Lightning returned when no reason was given: the request itself as the "quote"
+        (
+            "no longer needed",
+            "please cancel order #W8770097",
+            "please cancel order #W8770097",
+            False,
+        ),
+        ("other", "please cancel order #W8770097", "please cancel order #W8770097", False),
+        ("no longer needed", "I don't need it", "please cancel it", False),  # not in the text
+        ("no longer needed", None, "please cancel it", False),
+        ("no longer needed", "I need to cancel this", "I need to cancel this", False),
+    ],
+)
+def test_gave_reason(reason, quote, text, ok):
+    assert gave_reason(reason, quote, text) is ok
 
 
 async def test_cancel_happy_path_writes_only_after_yes(real_db):
@@ -544,7 +595,11 @@ async def test_skip_label_without_skip_words_is_treated_as_an_answer(real_db):
     llm = ivan_llm()
     llm.on(Classification, "cancel", classified(req("cancel_order", IVAN_PENDING)))
     llm.on(CancelTurn, "cancel", cancel_turn())
-    llm.on(CancelTurn, "accident", cancel_turn("ordered by mistake", relation="skip"))
+    llm.on(
+        CancelTurn,
+        "accident",
+        cancel_turn("ordered by mistake", quote="by accident", relation="skip"),
+    )
     chat, _, _ = await verified_chat(real_db, llm)
     await chat.say(f"cancel {IVAN_PENDING}")
     await chat.say("I bought it by accident")
@@ -562,6 +617,7 @@ async def test_echo_of_current_request_is_not_queued_again(real_db):
         "accident",
         cancel_turn(
             "ordered by mistake",
+            quote="by accident",
             new_requests=[req("cancel_order", details="I bought it by accident")],
         ),
     )

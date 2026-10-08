@@ -1,0 +1,63 @@
+# Alerts for the agent. They show in Prometheus (:9090/alerts) and in Grafana's Alerting page;
+# nothing is sent anywhere. Unit tests: alerts_test.yml (`make test-alerts`).
+groups:
+  - name: customer-workflow-agent
+    rules:
+      - alert: AppDown
+        expr: up{job="agent"} == 0 or agent_ready == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: The app is down or not ready
+          description: Prometheus can't scrape the app, or /readyz is failing (see its checks).
+
+      - alert: LLMUnavailable
+        expr: sum(increase(llm_requests_total{served_by="none"}[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Every LLM model failed for some requests
+          description: Customers got an apology instead of an answer in the last 5 minutes.
+
+      - alert: HighFallbackRate
+        expr: |
+          sum(rate(llm_requests_total{served_by="fallback"}[10m]))
+            / sum(rate(llm_requests_total{served_by=~"primary|fallback"}[10m])) > 0.3
+        labels:
+          severity: warning
+        annotations:
+          summary: Over 30% of LLM requests needed the fallback model
+          description: The primary model is failing or slow; see llm_calls_total by outcome.
+
+      - alert: RateLimited
+        expr: sum(increase(llm_calls_total{outcome="rate_limited"}[5m])) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: NVIDIA returned more than 5 rate-limit (429) errors in 5 minutes
+          description: The account's request limit is being hit; replies slow down or fail.
+
+      - alert: SlowReplies
+        expr: histogram_quantile(0.95, sum by (le) (rate(agent_reply_seconds_bucket[10m]))) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: 95% of replies take longer than 10 seconds
+          description: Measured over the last 10 minutes, per customer action.
+
+      - alert: AtCapacity
+        expr: sum(increase(agent_chats_refused_total[5m])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: 3 or more chats were turned away in 5 minutes
+          description: The app is full (MAX_OPEN_CHATS); new customers see the busy message.
+
+      - alert: ApprovalWaiting
+        expr: agent_oldest_approval_wait_seconds > 600
+        labels:
+          severity: warning
+        annotations:
+          summary: A return has waited over 10 minutes for a supervisor
+          description: A customer's chat is paused until someone decides on /supervisor.

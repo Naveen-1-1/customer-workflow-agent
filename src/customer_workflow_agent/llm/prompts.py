@@ -1,8 +1,32 @@
-"""Prompt builders. Each prompt sees only what its task needs, and never another user's data."""
+"""Prompt builders. Each prompt sees only what its task needs, and never another user's data.
+
+Every prompt has a name and a version. Bump the version in VERSIONS whenever you change a
+prompt's wording; tests/llm/test_prompt_versions.py fails until you do.
+"""
 
 import json
 
 from customer_workflow_agent.llm.service import Prompt
+
+VERSIONS = {
+    "classification": 1,
+    "auth": 1,
+    "turn.cancel_order": 2,
+    "turn.modify_order_address": 1,
+    "turn.modify_order_payment": 1,
+    "turn.modify_order_items": 1,
+    "turn.exchange_items": 1,
+    "turn.return_items": 1,
+    "turn.modify_default_address": 1,
+    "info": 1,
+    "ask": 1,
+    "small_talk": 1,
+}
+
+
+def _prompt(name: str, system: str, user: str, customer_text: str) -> Prompt:
+    return Prompt(system, user, customer_text, name=name, version=VERSIONS[name])
+
 
 _JSON_RULES = (
     "Reply with a JSON object that matches the given schema exactly. Use null for anything "
@@ -39,7 +63,7 @@ Rules:
 - Small talk, thanks, or unclear messages: return an empty requests list.
 {_JSON_RULES}"""
     user = f"Agent's last message: {last_agent or '(none)'}\nCustomer message: {customer_text}"
-    return Prompt(system, user, customer_text)
+    return _prompt("classification", system, user, customer_text)
 
 
 def auth(customer_text: str) -> Prompt:
@@ -49,14 +73,16 @@ first name, last name and zip code. Extract those from the message.
 - goodbye: they want to end the chat.
 - has_request: they also mention something they need help with (an order, return, etc.).
 {_JSON_RULES}"""
-    return Prompt(system, f"Customer message: {customer_text}", customer_text)
+    return _prompt("auth", system, f"Customer message: {customer_text}", customer_text)
 
 
 _TASKS = {
     "cancel_order": (
         "cancelling a pending order",
         "reason: 'no longer needed' or 'ordered by mistake' if the customer's reason means one of "
-        "these; 'other' for any other reason; null if they gave none.",
+        "these; 'other' for any other reason; null if they gave none. reason_quote: the exact "
+        "words from the customer's message that give the reason, copied character for character; "
+        "null if they gave none. Never fill in a reason they didn't give.",
     ),
     "modify_order_address": (
         "changing the shipping address of a pending order",
@@ -128,7 +154,7 @@ new_requests: other requests they mention, using these types:
         )
     parts.append(f"Agent's last message: {last_agent or '(none)'}")
     parts.append(f"Customer message: {customer_text}")
-    return Prompt(system, "\n".join(parts), customer_text)
+    return _prompt(f"turn.{request_type}", system, "\n".join(parts), customer_text)
 
 
 def info(customer_text: str, product_names: list[str]) -> Prompt:
@@ -142,7 +168,7 @@ def info(customer_text: str, product_names: list[str]) -> Prompt:
 order_ids: order numbers they wrote. product: the product they ask about, using a name from
 this list if one matches: {", ".join(product_names)}.
 {_JSON_RULES}"""
-    return Prompt(system, f"Customer message: {customer_text}", customer_text)
+    return _prompt("info", system, f"Customer message: {customer_text}", customer_text)
 
 
 _WRITER_RULES = (
@@ -156,7 +182,7 @@ def ask(question: str, customer_text: str) -> Prompt:
     system = f"""You are a retail customer-service agent. Rephrase the question below naturally
 for the customer, keeping its meaning exactly. {_WRITER_RULES}"""
     user = f"Question to ask: {question}\nCustomer's last message: {customer_text}"
-    return Prompt(system, user, customer_text)
+    return _prompt("ask", system, user, customer_text)
 
 
 def small_talk(customer_text: str) -> Prompt:
@@ -164,4 +190,4 @@ def small_talk(customer_text: str) -> Prompt:
 you can act on. Reply politely and briefly, and offer help with their orders (cancellations,
 changes, returns, exchanges) or their account address. Do not answer general-knowledge or
 off-topic questions. {_WRITER_RULES}"""
-    return Prompt(system, f"Customer message: {customer_text}", customer_text)
+    return _prompt("small_talk", system, f"Customer message: {customer_text}", customer_text)

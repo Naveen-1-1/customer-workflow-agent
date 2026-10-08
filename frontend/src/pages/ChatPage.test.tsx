@@ -1,10 +1,11 @@
 import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { ApiError } from '@/api/client'
 import { chatReducer, initialChatState } from '@/hooks/useChat'
 import { FakeEventSource } from '@/test/FakeEventSource'
 import { confirmPending, fakeApi, renderAt, view } from '@/test/fixtures'
-import { ChatPage } from './ChatPage'
+import { BUSY_TEXT, ChatPage } from './ChatPage'
 
 function setup() {
   const api = fakeApi()
@@ -64,6 +65,26 @@ describe('ChatPage', () => {
     emit(view())
     act(() => es.emit('reset', {}))
     expect(screen.getByText('The demo was reset.')).toBeInTheDocument()
+  })
+
+  it('shows the busy message when the app was full, with a way to try again', () => {
+    renderAt('/?busy=1', <ChatPage />, fakeApi())
+    expect(screen.getByText(BUSY_TEXT)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Try again' })).toHaveAttribute('href', '/')
+    expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Connecting/)).not.toBeInTheDocument() // no chat to connect to
+  })
+
+  it('keeps the message and says busy when a message is refused for capacity', async () => {
+    const { api, emit } = setup()
+    api.send = vi.fn(async () => {
+      throw new ApiError(503, 'at_capacity', BUSY_TEXT)
+    })
+    emit(view())
+    await userEvent.type(composer(), 'cancel my order{Enter}')
+    expect(await screen.findByText(BUSY_TEXT)).toBeInTheDocument()
+    expect(composer()).toHaveValue('cancel my order')
+    expect(composer()).toBeEnabled()
   })
 
   it('warns when the NVIDIA key is missing', async () => {

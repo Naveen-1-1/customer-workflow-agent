@@ -4,6 +4,7 @@ from customer_workflow_agent.llm.fake import ScriptedLLM
 from customer_workflow_agent.llm.schemas import AuthExtraction
 from customer_workflow_agent.templates import messages as M
 from tests.api.conftest import (
+    CANCEL,
     IVAN,
     IVAN_PENDING,
     RAJ,
@@ -34,7 +35,7 @@ async def test_cancel_over_http(api):
     client, app = api
     chat = await new_chat(client)
     await chat.say(f"my email is {IVAN}")
-    await chat.say(f"cancel {IVAN_PENDING}")
+    await chat.say(CANCEL)
     assert chat.pending["type"] == "confirm"
     assert chat.pending["summary"]["title"] == f"Cancel order {IVAN_PENDING}"
     await chat.click(True)
@@ -68,7 +69,7 @@ async def test_double_click_writes_once(api):
     client, app = api
     chat = await new_chat(client)
     await chat.say(f"my email is {IVAN}")
-    await chat.say(f"cancel {IVAN_PENDING}")
+    await chat.say(CANCEL)
     body = {"interrupt_id": chat.pending["interrupt_id"], "confirmed": True}
     r1, r2 = await asyncio.gather(
         client.post(f"/api/chats/{chat.id}/confirm?wait=true", json=body),
@@ -158,7 +159,7 @@ async def test_reset_restores_store_and_deletes_chats(api, tmp_path):
     client, app = api
     chat = await new_chat(client)
     await chat.say(f"my email is {IVAN}")
-    await chat.say(f"cancel {IVAN_PENDING}")
+    await chat.say(CANCEL)
     await chat.click(True)
     settings = app.state.services.settings
     assert settings.db_working.read_bytes() != DATA_DB.read_bytes()
@@ -200,7 +201,7 @@ async def test_original_data_is_never_modified(api):
     before = DATA_DB.read_bytes()
     chat = await new_chat(client)
     await chat.say(f"my email is {IVAN}")
-    await chat.say(f"cancel {IVAN_PENDING}")
+    await chat.say(CANCEL)
     await chat.click(True)
     assert DATA_DB.read_bytes() == before
 

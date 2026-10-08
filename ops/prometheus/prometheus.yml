@@ -1,0 +1,19 @@
+# Local Prometheus for the agent (`make metrics`). Scrapes the app on :8000.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: agent
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+
+  # `make load` runs its own copy of the app on :8010 (down unless a load test is running).
+  - job_name: agent-load
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8010"]

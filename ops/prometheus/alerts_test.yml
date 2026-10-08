@@ -1,0 +1,204 @@
+# promtool unit tests for alerts.yml: `make test-alerts` (promtool comes with Homebrew's
+# prometheus). Each alert is checked both firing and staying quiet.
+rule_files:
+- alerts.yml
+evaluation_interval: 1m
+tests:
+- name: 'AppDown: scrape fails for a minute'
+  interval: 1m
+  input_series:
+  - series: up{job="agent", instance="127.0.0.1:8000"}
+    values: 1 1 0 0 0 0
+  - series: agent_ready{job="agent", instance="127.0.0.1:8000"}
+    values: 1 1 1 1 1 1
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: AppDown
+    exp_alerts: []
+  - eval_time: 2m
+    alertname: AppDown
+    exp_alerts: []
+  - eval_time: 4m
+    alertname: AppDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: agent
+        instance: 127.0.0.1:8000
+      exp_annotations: &id001
+        summary: The app is down or not ready
+        description: Prometheus can't scrape the app, or /readyz is failing (see its checks).
+- name: 'AppDown: up but not ready'
+  interval: 1m
+  input_series:
+  - series: up{job="agent", instance="127.0.0.1:8000"}
+    values: 1 1 1 1 1
+  - series: agent_ready{job="agent", instance="127.0.0.1:8000"}
+    values: 1 0 0 0 0
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: AppDown
+    exp_alerts: []
+  - eval_time: 3m
+    alertname: AppDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: agent
+        instance: 127.0.0.1:8000
+      exp_annotations: *id001
+- name: 'LLMUnavailable: one request where every model failed'
+  interval: 1m
+  input_series:
+  - series: llm_requests_total{prompt="auth@v1", served_by="none"}
+    values: 0 0 1 1 1 1 1 1 1 1
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: LLMUnavailable
+    exp_alerts: []
+  - eval_time: 3m
+    alertname: LLMUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: Every LLM model failed for some requests
+        description: Customers got an apology instead of an answer in the last 5 minutes.
+  - eval_time: 9m
+    alertname: LLMUnavailable
+    exp_alerts: []
+- name: 'HighFallbackRate: 5 of 13 requests a minute on the fallback (38%) fires'
+  interval: 1m
+  input_series:
+  - series: llm_requests_total{prompt="auth@v1", served_by="primary"}
+    values: 0+6x20
+  - series: llm_requests_total{prompt="auth@v1", served_by="fallback"}
+    values: 0+4x20
+  - series: llm_requests_total{prompt="info@v1", served_by="primary"}
+    values: 0+2x20
+  - series: llm_requests_total{prompt="info@v1", served_by="fallback"}
+    values: 0+1x20
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: HighFallbackRate
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: Over 30% of LLM requests needed the fallback model
+        description: The primary model is failing or slow; see llm_calls_total by outcome.
+- name: 'HighFallbackRate: low fallback rate stays quiet'
+  interval: 1m
+  input_series:
+  - series: llm_requests_total{prompt="auth@v1", served_by="primary"}
+    values: 0+6x20
+  - series: llm_requests_total{prompt="auth@v1", served_by="fallback"}
+    values: 0+1x20
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: HighFallbackRate
+    exp_alerts: []
+- name: 'RateLimited: 8 rate limits in 4 minutes'
+  interval: 1m
+  input_series:
+  - series: llm_calls_total{model="m", prompt="auth@v1", outcome="rate_limited"}
+    values: 0 2 4 6 8 8 8 8 8 8 8 8
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: RateLimited
+    exp_alerts: []
+  - eval_time: 4m
+    alertname: RateLimited
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: NVIDIA returned more than 5 rate-limit (429) errors in 5 minutes
+        description: The account's request limit is being hit; replies slow down or fail.
+  - eval_time: 11m
+    alertname: RateLimited
+    exp_alerts: []
+- name: 'RateLimited: a single rate limit stays quiet'
+  interval: 1m
+  input_series:
+  - series: llm_calls_total{model="m", prompt="auth@v1", outcome="rate_limited"}
+    values: 0 1 1 1 1 1
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: RateLimited
+    exp_alerts: []
+- name: 'SlowReplies: every reply between 10 and 30 seconds'
+  interval: 1m
+  input_series:
+  - series: agent_reply_seconds_bucket{action="message", le="5"}
+    values: 0+0x20
+  - series: agent_reply_seconds_bucket{action="message", le="10"}
+    values: 0+0x20
+  - series: agent_reply_seconds_bucket{action="message", le="30"}
+    values: 0+5x20
+  - series: agent_reply_seconds_bucket{action="message", le="+Inf"}
+    values: 0+5x20
+  alert_rule_test:
+  - eval_time: 12m
+    alertname: SlowReplies
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: 95% of replies take longer than 10 seconds
+        description: Measured over the last 10 minutes, per customer action.
+- name: 'SlowReplies: fast replies stay quiet'
+  interval: 1m
+  input_series:
+  - series: agent_reply_seconds_bucket{action="message", le="5"}
+    values: 0+5x20
+  - series: agent_reply_seconds_bucket{action="message", le="10"}
+    values: 0+5x20
+  - series: agent_reply_seconds_bucket{action="message", le="30"}
+    values: 0+5x20
+  - series: agent_reply_seconds_bucket{action="message", le="+Inf"}
+    values: 0+5x20
+  alert_rule_test:
+  - eval_time: 12m
+    alertname: SlowReplies
+    exp_alerts: []
+- name: 'AtCapacity: 3 refusals fire, 2 don''t'
+  interval: 1m
+  input_series:
+  - series: agent_chats_refused_total
+    values: 0 1 2 3 3 3 3 3 3 3 3
+  alert_rule_test:
+  - eval_time: 2m
+    alertname: AtCapacity
+    exp_alerts: []
+  - eval_time: 3m
+    alertname: AtCapacity
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: 3 or more chats were turned away in 5 minutes
+        description: The app is full (MAX_OPEN_CHATS); new customers see the busy message.
+  - eval_time: 10m
+    alertname: AtCapacity
+    exp_alerts: []
+- name: 'ApprovalWaiting: over 10 minutes'
+  interval: 1m
+  input_series:
+  - series: agent_oldest_approval_wait_seconds
+    values: 500 650 0
+  alert_rule_test:
+  - eval_time: 0m
+    alertname: ApprovalWaiting
+    exp_alerts: []
+  - eval_time: 1m
+    alertname: ApprovalWaiting
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: A return has waited over 10 minutes for a supervisor
+        description: A customer's chat is paused until someone decides on /supervisor.
+  - eval_time: 2m
+    alertname: ApprovalWaiting
+    exp_alerts: []

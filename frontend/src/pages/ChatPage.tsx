@@ -11,6 +11,7 @@ import { useChat } from '@/hooks/useChat'
 import { usd } from '@/lib/format'
 
 export const LAST_CHAT_KEY = 'cwa:lastChatId'
+export const BUSY_TEXT = "We're busy right now, please try again in a minute."
 
 function Notice({ children, tone = 'info' }: { children: React.ReactNode; tone?: 'info' | 'warn' }) {
   return (
@@ -30,6 +31,7 @@ function Notice({ children, tone = 'info' }: { children: React.ReactNode; tone?:
 export function ChatPage() {
   const [params] = useSearchParams()
   const chatId = params.get('chat')
+  const refused = !chatId && params.has('busy') // the app was full when this chat would start
   const { api } = useDeps()
   const { state, status, send, answer, retry } = useChat(chatId)
   const [meta, setMeta] = useState<Meta | null>(null)
@@ -58,7 +60,7 @@ export function ChatPage() {
       <header className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Customer support</h1>
         <div className="flex items-center gap-2">
-          <ConnectionBadge status={status} />
+          {!refused && <ConnectionBadge status={status} />}
           <Button variant="outline" size="sm" asChild>
             <Link to="/?new=1">New chat</Link>
           </Button>
@@ -76,7 +78,16 @@ export function ChatPage() {
       )}
 
       <main className="flex-1 overflow-y-auto rounded-xl border p-3">
-        {state.notFound ? (
+        {refused ? (
+          <Notice tone="warn">
+            <div className="flex items-center justify-between gap-2">
+              <span>{BUSY_TEXT}</span>
+              <Button size="sm" asChild>
+                <Link to="/">Try again</Link>
+              </Button>
+            </div>
+          </Notice>
+        ) : state.notFound ? (
           <Notice>This chat no longer exists.</Notice>
         ) : view ? (
           <MessageList messages={messages} typing={busy} />
@@ -91,6 +102,7 @@ export function ChatPage() {
           will update as soon as they decide.
         </Notice>
       )}
+      {state.busy && <Notice tone="warn">{BUSY_TEXT}</Notice>}
       {view?.error && !busy && (
         <Notice tone="warn">
           <div className="flex items-center justify-between gap-2">
@@ -118,7 +130,7 @@ export function ChatPage() {
         </Notice>
       )}
 
-      {!view?.ended && !state.reset && !state.notFound && (
+      {!refused && !view?.ended && !state.reset && !state.notFound && (
         <Composer
           disabled={!canType}
           placeholder={pending?.type === 'supervisor_approval' ? 'Waiting for approval…' : undefined}

@@ -1,0 +1,50 @@
+{
+  "ask": {
+    "fingerprint": "1c7839622c87a6d8",
+    "version": 1
+  },
+  "auth": {
+    "fingerprint": "e3b88c70449a2d08",
+    "version": 1
+  },
+  "classification": {
+    "fingerprint": "019f0dba03c922b9",
+    "version": 1
+  },
+  "info": {
+    "fingerprint": "38abeae90b8cf0d5",
+    "version": 1
+  },
+  "small_talk": {
+    "fingerprint": "4ff54d59edaf6b9f",
+    "version": 1
+  },
+  "turn.cancel_order": {
+    "fingerprint": "53e15a227c5acccd",
+    "version": 2
+  },
+  "turn.exchange_items": {
+    "fingerprint": "3a8a3478e16c8f0d",
+    "version": 1
+  },
+  "turn.modify_default_address": {
+    "fingerprint": "08fdea22619ddea2",
+    "version": 1
+  },
+  "turn.modify_order_address": {
+    "fingerprint": "4a5a6116e7d848b3",
+    "version": 1
+  },
+  "turn.modify_order_items": {
+    "fingerprint": "a55223e558cf8e41",
+    "version": 1
+  },
+  "turn.modify_order_payment": {
+    "fingerprint": "dd07a101530bc070",
+    "version": 1
+  },
+  "turn.return_items": {
+    "fingerprint": "3ad6e4197891f8a9",
+    "version": 1
+  }
+}

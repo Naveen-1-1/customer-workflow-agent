@@ -54,9 +54,13 @@ cp .env.example .env    # then put your NVIDIA API key in .env
 ```
 
 Get a key at <https://build.nvidia.com/settings/api-keys>.
-- **Models:** `nvidia/nemotron-3.5-lightning-30b-a3b` is the primary, with `nvidia/nemotron-3-super-120b-a12b` as fallback. Reasoning ("thinking") is off.
-- **Rate limit:** the free tier allows about 40 requests per minute, shared across your account. The app limits itself to 36 per minute.
+- **Models:** `nvidia/nemotron-3.5-lightning-30b-a3b` is the primary, with `nvidia/nemotron-3-super-120b-a12b` as fallback. Reasoning ("thinking") is off. Calls go through the [LiteLLM](https://docs.litellm.ai/) Router (pinned to an exact version, see `pyproject.toml`):
+  - **429 / 5xx / bad output:** retried twice with backoff, then the fallback model;
+  - **timeout (15 s):** straight to the fallback;
+  - **every model failed:** the chat apologizes and stays usable.
+- **Rate limit:** the free tier allows about 40 requests per minute, shared across your account. The app limits itself to 36 per minute (`LLM_REQUESTS_PER_MINUTE`).
 - **Without a key:** the app still runs and verifies customers by email or by name + zip. Anything else gets an apology message.
+- **Other endpoints:** `LLM_BASE_URL` points the app at any OpenAI-compatible server, such as the fake one used for tests.
 
 ## Run
 
@@ -68,6 +72,10 @@ make dev        # backend on :8000 + frontend on :5173 (Ctrl-C stops both)
 - Supervisor: <http://localhost:5173/supervisor>
 
 `make serve` builds the frontend and serves everything from FastAPI on <http://localhost:8000>.
+
+**When it's busy:** at most `MAX_OPEN_CHATS` (10) chats are open at once. A chat stays open until it ends or sits idle for `CHAT_IDLE_MINUTES` (10).
+- **When full:** new customers see "We're busy right now, please try again in a minute" with a **Try again** button. An idle chat that comes back also has to wait for a slot.
+- **Never refused:** popup answers and supervisor decisions.
 
 **Data:** the store's changes go to `var/db.working.json`; `data/db.json` is never modified. Chats are kept in `var/checkpoints.sqlite`, so they survive restarts. The supervisor page's **Reset demo** restores the store and deletes all chats. `make reset-data` does the same with the server stopped.
 
@@ -86,6 +94,43 @@ Open the chat and the supervisor page side by side. Set `APPROVAL_ENABLED=true` 
 4. **Large return, rejected:** do the same return in a new chat and reject it with a note on the supervisor page. The customer sees the note and is offered a human; a retry on that order is refused.
 5. **Two requests at once:** ask for two things in one message and watch them run in order.
 
+## Observability
+
+- **Logs:** every line names its chat, as in `12:01:22 INFO [chat=91870f…] uvicorn.access: …`. Failed model attempts get one compact line each.
+- **Tracing (LangSmith):** set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` in `.env`.
+  - Each chat shows up as one thread.
+  - Every graph step and LLM call is traced, and each LLM call carries its prompt name and version.
+  - Tests and load runs always run with tracing off.
+- **Health:** `GET /healthz` (process up) and `GET /readyz` (store, chat DB, checkpoints and LLM key). `/readyz` never calls the LLM.
+- **Metrics:** `GET /metrics` (Prometheus) covers:
+  - LLM attempts by outcome (ok, timeout, rate_limited, server_error, bad_output);
+  - which model answered (primary, fallback or none);
+  - reply times by customer action;
+  - open and refused chats, approvals waiting, rate-limiter wait, and HTTP requests.
+- **Dashboard and alerts:** `make metrics` starts Prometheus (:9090) and Grafana (:3000, no login, local only) for an app running on :8000. Install them first with `brew install prometheus grafana`.
+  - The dashboard is provisioned from `ops/grafana/`.
+  - Alerts in `ops/prometheus/alerts.yml`: app down or not ready, every model failed, fallback above 30%, more than 5 NVIDIA 429s in 5 min, p95 reply above 10 s, 3+ refused chats in 5 min, an approval waiting over 10 min.
+  - Alerts show only in Grafana and Prometheus; nothing is sent anywhere.
+- **Prompt versions:** each prompt in `llm/prompts.py` has a version in `VERSIONS`. If you change its wording, bump the version and run `make prompt-fingerprints`. A test fails until you do.
+
+## Load and failure testing
+
+`make fake-llm` runs a fake OpenAI-compatible model server on :8100.
+- It answers the load-test customers' messages from a small scenario table.
+- Faults are set per model through `POST /_faults`: latency, 429s, 500s, timeouts and bad JSON.
+
+`make load` runs a fake-model server, a separate copy of the app (:8010, with data in `var/load/`) and Locust, then prints a summary.
+- **Simulated customers:** each one verifies by email, asks about an order, cancels or returns, and says bye, typing at human speed.
+- **Report:** `var/load/report.html`.
+- **Settings:** `USERS=20 DURATION=2m RPM=36` (the app's LLM limit; `RPM=6000` measures the app without it), `LATENCY_S`, `FAULTS='{"rate_limit": 0.2}'`, and any app setting such as `MAX_OPEN_CHATS`.
+
+| | 15 users, `RPM=36` | 15 users, `RPM=6000`, 20% fake 429s |
+|---|---|---|
+| Reply time | median 11 s, p95 45 s | median 1.4 s, p95 5.3 s |
+| Failures | 0 | 0 (every 429 was absorbed by retries) |
+
+In the first run nearly all of that time is spent waiting for the 36-requests-per-minute limit.
+
 ## Tests
 
 ```bash
@@ -94,13 +139,16 @@ make test-web   # frontend (Vitest)
 make test-live  # live NVIDIA checks, needs NVIDIA_API_KEY
 make lint
 make graph     # re-export docs/workflow-graph.mmd from the compiled graph
+make test-alerts  # promtool unit tests for the alert rules (needs: brew install prometheus)
 ```
 
 **What the backend tests cover:**
 - the store: τ²-bench's own tool tests ported, plus every write action in its 114 tasks replayed
 - conversation flows with a scripted LLM
 - three τ²-bench tasks (0, 16, 19) played through the graph: the final store must equal replaying each task's expected actions
-- API behavior: double clicks, stale answers, restarts, reset
+- API behavior: double clicks, stale answers, restarts, reset, capacity limits, health and metrics
+- the whole app against the fake model server: retries and fallback on 429, 500, bad JSON and timeouts, and recovery when every model is down
+- LiteLLM routing (with mocked responses), LangSmith traces (recorded locally), chat ids in logs, prompt versions
 
 The real-server streaming tests skip themselves where binding a local port isn't allowed.
 
@@ -112,11 +160,15 @@ src/customer_workflow_agent/
   store/                  store + operations, adapted from τ²-bench (two bugs fixed)
   policy/rules.py         the retail policy as plain checks
   resolve/                "the blue one", "my Visa", addresses → concrete ids
-  llm/                    NVIDIA models, schemas, prompts, retries/fallback, reply guard
+  llm/                    LiteLLM Router (models, retries, fallback), schemas, versioned prompts, reply guard
   templates/              every customer-facing fact and wording
   graph/                  parent graph, shared write flow, 9 subgraphs (each check a named node)
-  api/                    FastAPI endpoints, chat runner, live updates (SSE)
+  api/                    FastAPI endpoints, chat runner (capacity limit), live updates (SSE), health
+  obs/                    chat-id logging, LangSmith tracing, Prometheus metrics
+  devtools/               fake OpenAI-compatible model server
 frontend/                 React (Vite + TypeScript + shadcn/ui): chat and supervisor pages
+ops/                      Prometheus config + alert rules (with tests), Grafana datasource + dashboard
+load/                     Locust customers and the `make load` runner
 tests/
 ```
 

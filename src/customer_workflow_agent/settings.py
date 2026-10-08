@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # LLM (NVIDIA API)
     nvidia_api_key: SecretStr | None = None
-    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    llm_base_url: str = "https://integrate.api.nvidia.com/v1"  # OpenAI-compatible endpoint
     llm_primary_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
     llm_fallback_model: str = "nvidia/nemotron-3-super-120b-a12b"
     llm_temperature_extract: float = 0.1
@@ -25,9 +25,18 @@ class Settings(BaseSettings):
     llm_max_attempts: int = 3
     llm_reply_writer_enabled: bool = True  # LLM phrases questions/small talk (else templates)
 
+    # Tracing (LangSmith); off unless turned on and a key is set
+    langsmith_tracing: bool = False
+    langsmith_api_key: SecretStr | None = None
+    langsmith_project: str = "customer-workflow-agent"
+
     # Supervisor approval for large returns
     approval_enabled: bool = False
     approval_threshold: float = 1000.0
+
+    # Capacity: chats open at once; a chat idle this long frees its slot
+    max_open_chats: int = 10
+    chat_idle_minutes: float = 10.0
 
     # Conversation limits
     auth_max_attempts: int = 3

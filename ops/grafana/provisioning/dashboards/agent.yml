@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: customer-workflow-agent
+    type: file
+    allowUiUpdates: false
+    options:
+      path: ${CWA_ROOT}/ops/grafana/dashboards # CWA_ROOT is set by `make metrics`
