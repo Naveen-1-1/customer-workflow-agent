@@ -20,7 +20,7 @@ def pending_from(interrupts: list) -> Pending | None:
         return Pending(
             type=kind, interrupt_id=intr.id, refund_total=value["request"]["refund_total"]
         )
-    return Pending(type=kind, interrupt_id=intr.id)
+    return Pending(type=kind, interrupt_id=intr.id, suggestions=value.get("suggestions") or [])
 
 
 def chat_view(

@@ -17,6 +17,7 @@ from customer_workflow_agent.resolve.ids import literal_in
 from customer_workflow_agent.store.models import Order
 from customer_workflow_agent.templates import format as F
 from customer_workflow_agent.templates.messages import refund_line
+from customer_workflow_agent.templates.suggestions import CANCEL_REASONS
 
 
 def _refunds(order: Order) -> dict[str, float]:
@@ -59,6 +60,7 @@ def check_reason(slots: dict, found: dict, ctx: Ctx) -> Check:
             question="Could you tell me why you'd like to cancel — is it no longer needed, "
             "or was it ordered by mistake?",
             slot="reason",
+            suggestions=CANCEL_REASONS,
         )
     return check_cancel_reason(reason) or Found()
 

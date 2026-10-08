@@ -67,6 +67,7 @@ class ChatState(TypedDict, total=False):
     outcomes: list[Outcome]
     group_slots: dict[str, dict]  # details shared by "all my orders" sibling requests
     end_requested: bool
+    suggestions: list[dict]  # Suggestion dicts for the next customer pause
     route: str
 
 

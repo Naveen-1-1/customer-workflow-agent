@@ -29,6 +29,19 @@ export function view(overrides: Partial<ChatView> = {}): ChatView {
   }
 }
 
+// A chat past the landing screen: the customer has said something.
+export const chatting: ChatView['messages'] = [
+  { id: 'm1', role: 'agent', text: 'Hi! How can I help?', kind: 'text' },
+  { id: 'm2', role: 'customer', text: 'hi', kind: 'text' },
+  { id: 'm3', role: 'agent', text: 'Which order?', kind: 'question' },
+]
+
+export const scenarios = [
+  { label: 'Exchange two items', text: "I'm Yusuf Rossi, zip 19122. Exchange my keyboard" },
+  { label: 'Cancel orders', text: 'Fatima Johnson, 78712. Cancel my pending orders' },
+  { label: 'Return one item', text: 'Mei Davis 80217. Return the water bottle' },
+]
+
 export const confirmPending: Pending = {
   type: 'confirm',
   interrupt_id: 'i2',

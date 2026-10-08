@@ -49,7 +49,9 @@ from customer_workflow_agent.llm.structured import LLMUnavailable
 from customer_workflow_agent.policy.rules import Denial, needs_approval
 from customer_workflow_agent.store import RetailStore, StoreError
 from customer_workflow_agent.store.models import User, UserAddress
+from customer_workflow_agent.templates import format as F
 from customer_workflow_agent.templates import messages as M
+from customer_workflow_agent.templates import suggestions as S
 from customer_workflow_agent.templates.denials import denial_text
 
 
@@ -60,6 +62,13 @@ class Ask:
     preface: str = ""  # factual notice shown before the question
     slot: str = ""
     choices: dict | None = None  # {"kind": ..., "values": [...], "index": int | None}
+    options: list[str] = field(default_factory=list)  # a numbered list, shown as `details`
+    suggestions: list[dict] | None = None  # reply buttons; default: one per option
+
+    def __post_init__(self):
+        # The message and the buttons come from the same labels, so they always match.
+        if self.options and not self.details:
+            self.details = F.numbered(self.options)
 
 
 @dataclass
@@ -289,7 +298,10 @@ def build_action_subgraph(spec: ActionSpec, deps: Deps):
         if not a["details"]:
             question = await phrase(deps, question, state.get("last_text", ""))
         text = "\n".join(p for p in (a["preface"], question, a["details"]) if p)
-        return {"messages": [agent_msg(text, "question")], "route": "wait"}
+        buttons = a["suggestions"]
+        if buttons is None:
+            buttons = [S.suggestion(o) for o in a["options"]]
+        return {"messages": [agent_msg(text, "question")], "suggestions": buttons, "route": "wait"}
 
     async def deny(state: ChatState) -> dict:
         d = state["work"]["denial"]
@@ -315,7 +327,12 @@ def build_action_subgraph(spec: ActionSpec, deps: Deps):
                 "messages": [agent_msg(M.TOO_MANY_DECLINES)],
                 **finish_update(state, "declined"),
             }
-        return {"work": work, "messages": [agent_msg(M.DECLINED)], "route": "wait"}
+        return {
+            "work": work,
+            "messages": [agent_msg(M.DECLINED)],
+            "suggestions": S.SKIP_REQUEST,
+            "route": "wait",
+        }
 
     async def approval_gate(state: ChatState) -> dict:
         ready = state["work"]["ready"]

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 
-from customer_workflow_agent.resolve.text import match_one, mentions
+from customer_workflow_agent.resolve.text import compact, match_one, mentions
 from customer_workflow_agent.store.models import Order
 
 
@@ -21,7 +21,12 @@ def _candidates(order: Order, ref: dict, exclude: set[int]) -> list[int]:
         if product and not mentions(product, line.name):
             continue
         values = list(line.options.values())
-        if all(match_one(opt, values) is not None for opt in ref.get("options") or []):
+        # A bare option name ("size") doesn't say which one, so it doesn't rule a line out.
+        names = {compact(n) for n in line.options}
+        if all(
+            match_one(opt, values) is not None or compact(opt) in names
+            for opt in ref.get("options") or []
+        ):
             out.append(i)
     return out
 

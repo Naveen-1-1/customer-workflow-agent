@@ -11,6 +11,7 @@ from customer_workflow_agent.llm.schemas import AddressTurn
 from customer_workflow_agent.resolve.addresses import complete_address, merge_fields, same_address
 from customer_workflow_agent.store.models import UserAddress
 from customer_workflow_agent.templates import format as F
+from customer_workflow_agent.templates.suggestions import DEFAULT_ADDRESS
 
 
 def _merge_address(slots: dict, turn: AddressTurn) -> dict:
@@ -23,7 +24,11 @@ def _merge_address(slots: dict, turn: AddressTurn) -> dict:
     return slots
 
 
-def _new_address(slots: dict, ctx: Ctx, current: UserAddress, what: str) -> UserAddress | Ask:
+def _new_address(
+    slots: dict, ctx: Ctx, current: UserAddress, what: str, profile_ok: bool = False
+) -> UserAddress | Ask:
+    # The account's default address is offered for an order, when it ships somewhere else.
+    buttons = DEFAULT_ADDRESS if profile_ok and not same_address(ctx.user.address, current) else []
     if slots.get("use_profile_address"):
         address = ctx.user.address
     else:
@@ -35,19 +40,22 @@ def _new_address(slots: dict, ctx: Ctx, current: UserAddress, what: str) -> User
                 if asked_before
                 else f"What's the new {what}? Please include the street, city, state and zip code."
             )
-            return Ask(question=question, slot="address")
+            return Ask(question=question, slot="address", suggestions=buttons)
     if same_address(address, current):
         return Ask(
             question=f"What new {what} would you like?",
             preface=f"That's already the {what}: {F.address_text(current)}.",
             slot="address",
+            suggestions=buttons,
         )
     return address
 
 
 def check_new_shipping_address(slots: dict, found: dict, ctx: Ctx) -> Check:
     """A complete address, different from where the order ships now."""
-    new = _new_address(slots, ctx, the_order(found, ctx).address, "shipping address")
+    new = _new_address(
+        slots, ctx, the_order(found, ctx).address, "shipping address", profile_ok=True
+    )
     return new if isinstance(new, Ask) else Found({"address": new.model_dump()})
 
 

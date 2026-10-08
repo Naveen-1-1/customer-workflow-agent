@@ -73,6 +73,11 @@ def test_resolve_lines_and_variants():
     order = db.orders["#W0000000"]
     assert resolve_lines(order, {"product": "tshirt", "options": ["blue"]}).lines == [0]
     assert resolve_lines(order, {"product": "mug", "options": []}).status == "none"
+    # The live model sometimes lists option names instead of values: they don't narrow it down.
+    assert resolve_lines(order, {"product": "tshirt", "options": ["size", "color"]}).lines == [0]
+    assert resolve_lines(order, {"product": "tshirt", "options": ["size", "purple"]}).status == (
+        "none"
+    )
     product = db.products["6086499569"]
     line: OrderItem = order.items[0]
     assert (

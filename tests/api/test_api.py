@@ -3,6 +3,7 @@ import asyncio
 from customer_workflow_agent.llm.fake import ScriptedLLM
 from customer_workflow_agent.llm.schemas import AuthExtraction
 from customer_workflow_agent.templates import messages as M
+from customer_workflow_agent.templates import suggestions as S
 from tests.api.conftest import (
     CANCEL,
     IVAN,
@@ -29,6 +30,7 @@ async def test_create_chat_greets_and_waits_for_customer(api):
     chat = await new_chat(client)
     assert chat.view["messages"][0]["text"] == M.GREETING
     assert chat.pending["type"] == "await_customer" and chat.view["running"] is False
+    assert chat.pending["suggestions"] == S.DEMO_SCENARIOS
 
 
 async def test_cancel_over_http(api):

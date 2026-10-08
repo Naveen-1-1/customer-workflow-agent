@@ -36,6 +36,7 @@ from customer_workflow_agent.llm.structured import LLMUnavailable
 from customer_workflow_agent.resolve.ids import email_in, literal_in, zip_in
 from customer_workflow_agent.store import StoreError
 from customer_workflow_agent.templates import messages as M
+from customer_workflow_agent.templates import suggestions as S
 
 WRITE_SPECS = [
     CANCEL_SPEC,
@@ -63,6 +64,7 @@ def build_parent_graph(deps: Deps) -> StateGraph:
             "group_slots": {},
             "end_requested": False,
             "user_id": None,
+            "suggestions": S.DEMO_SCENARIOS,
         }
 
     async def auth_interpret(state: ChatState) -> dict:
@@ -111,9 +113,15 @@ def build_parent_graph(deps: Deps) -> StateGraph:
             return {
                 **update,
                 "messages": [agent_msg(M.auth_missing(partial))],
+                "suggestions": S.DEMO_SCENARIOS,
                 "route": "wait_auth",
             }
-        return {**update, "messages": [agent_msg(M.ASK_AUTH)], "route": "wait_auth"}
+        return {
+            **update,
+            "messages": [agent_msg(M.ASK_AUTH)],
+            "suggestions": S.DEMO_SCENARIOS,
+            "route": "wait_auth",
+        }
 
     async def auth_check(state: ChatState) -> dict:
         auth = dict(state["auth"])
@@ -152,6 +160,7 @@ def build_parent_graph(deps: Deps) -> StateGraph:
         return {
             "auth": {"attempts": attempts},
             "messages": [agent_msg(M.auth_failed(attempts, settings.auth_max_attempts))],
+            "suggestions": S.DEMO_SCENARIOS,
             "route": "wait_auth",
         }
 
@@ -169,6 +178,7 @@ def build_parent_graph(deps: Deps) -> StateGraph:
             **update,
             "auth": {"attempts": 0},
             "messages": [agent_msg(M.AUTH_RETRY)],
+            "suggestions": S.DEMO_SCENARIOS,
             "route": "wait_auth",
         }
 
@@ -186,6 +196,7 @@ def build_parent_graph(deps: Deps) -> StateGraph:
         return {
             "messages": [*msgs, agent_msg(M.HOW_CAN_I_HELP)],
             "phase": "main",
+            "suggestions": S.REQUEST_TYPES,
             "route": "wait_main",
         }
 
@@ -217,7 +228,7 @@ def build_parent_graph(deps: Deps) -> StateGraph:
         if c.goodbye:
             return {"messages": msgs, "route": "goodbye"}
         if msgs:
-            return {"messages": msgs, "route": "wait_main"}
+            return {"messages": msgs, "suggestions": S.REQUEST_TYPES, "route": "wait_main"}
         return {"route": "small_talk"}
 
     async def small_talk(state: ChatState) -> dict:
@@ -229,7 +240,11 @@ def build_parent_graph(deps: Deps) -> StateGraph:
                 )
             except LLMUnavailable:
                 text = None
-        return {"messages": [agent_msg(text or M.NOT_UNDERSTOOD)], "route": "wait_main"}
+        return {
+            "messages": [agent_msg(text or M.NOT_UNDERSTOOD)],
+            "suggestions": S.REQUEST_TYPES,
+            "route": "wait_main",
+        }
 
     async def dispatch(state: ChatState) -> dict:
         queue = list(state.get("queue") or [])
@@ -246,7 +261,11 @@ def build_parent_graph(deps: Deps) -> StateGraph:
         return {"route": "dispatch"}
 
     async def anything_else(state: ChatState) -> dict:
-        return {"messages": [agent_msg(M.ANYTHING_ELSE)], "route": "wait_main"}
+        return {
+            "messages": [agent_msg(M.ANYTHING_ELSE)],
+            "suggestions": S.ANYTHING_ELSE,
+            "route": "wait_main",
+        }
 
     async def goodbye(state: ChatState) -> dict:
         return {

@@ -16,6 +16,7 @@ from customer_workflow_agent.store import StoreError
 from customer_workflow_agent.store.models import Order, User
 from customer_workflow_agent.templates import format as F
 from customer_workflow_agent.templates.denials import denial_text
+from customer_workflow_agent.templates.suggestions import suggestion
 
 ORDER_QUESTION = {
     "cancel_order": "Which order would you like to cancel?",
@@ -59,12 +60,17 @@ def find_order(action: str) -> Step:
                 return denial
         if not candidates:
             return Denial("no_eligible_orders", {"action_verb": ACTION_VERB[action]})
+        lines = [F.order_summary_line(o) for o in candidates]
         return Ask(
             question=ORDER_QUESTION[action],
             preface=preface,
-            details=F.numbered([F.order_summary_line(o) for o in candidates]),
+            options=lines,
             slot="order_id",
             choices={"kind": "order", "values": [o.order_id for o in candidates], "index": None},
+            suggestions=[
+                suggestion(line, f"Order {o.order_id}")
+                for line, o in zip(lines, candidates, strict=True)
+            ],
         )
 
     return step
@@ -119,7 +125,7 @@ def pick_payment(
     return None, Ask(
         question=question,
         preface=preface,
-        details=F.numbered([F.pm_text(user.payment_methods[p]) for p in options]),
+        options=[F.pm_text(user.payment_methods[p]) for p in options],
         slot=slot,
         choices={"kind": choice_kind, "values": options, "index": None},
     )

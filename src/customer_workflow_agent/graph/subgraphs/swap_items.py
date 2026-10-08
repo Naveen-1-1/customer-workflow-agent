@@ -2,6 +2,8 @@
 or exchange a delivered order's items. Policy: same product, different option, available;
 a payment method for the price difference; a gift card must cover it; all items in one go."""
 
+from itertools import zip_longest
+
 from customer_workflow_agent.graph.action import Ask, Check, Ctx, Found, Ready
 from customer_workflow_agent.graph.subgraphs.base import (
     catalog_for,
@@ -19,6 +21,7 @@ from customer_workflow_agent.resolve.variants import option_schema, resolve_vari
 from customer_workflow_agent.store.models import Order
 from customer_workflow_agent.templates import format as F
 from customer_workflow_agent.templates import messages as M
+from customer_workflow_agent.templates.suggestions import SKIP_REQUEST, suggestion
 
 
 def _merge_changes(existing: list[dict], new: list) -> list[dict]:
@@ -108,7 +111,7 @@ class SwapItems:
             return Ask(
                 question=f"Which items in order {order.order_id} would you like to {self.verb}, "
                 "and what would you like each changed to? Its items are:",
-                details=F.numbered([F.item_text(i) for i in order.items]),
+                options=[F.item_text(i) for i in order.items],
                 slot="changes",
             )
         used: set[int] = set()
@@ -120,7 +123,7 @@ class SwapItems:
                 if m.status == "ambiguous":
                     return Ask(
                         question=f"Which {change['item']['product']} do you mean?",
-                        details=F.numbered([F.item_text(order.items[i]) for i in m.lines]),
+                        options=[F.item_text(order.items[i]) for i in m.lines],
                         slot=f"line{idx}",
                         choices={"kind": "line", "values": m.lines, "index": idx},
                     )
@@ -129,7 +132,7 @@ class SwapItems:
                         question=f"Which item would you like to {self.verb}? Its items are:",
                         preface=f'I couldn\'t find "{change["item"]["product"]}" in order '
                         f"{order.order_id}.",
-                        details=F.numbered([F.item_text(i) for i in order.items]),
+                        options=[F.item_text(i) for i in order.items],
                         slot=f"line{idx}",
                     )
                 line = m.lines[0]
@@ -154,6 +157,7 @@ class SwapItems:
             return change["new_item_id"]
         schema = option_schema(product)
         options_help = "\n".join(f"- {k}: {', '.join(v)}" for k, v in schema.items())
+        other_options = _other_options(schema, item.options)
         vm = resolve_variant(product, item, change.get("desired") or [])
         if vm.status == "ok":
             assert vm.item_id
@@ -164,6 +168,7 @@ class SwapItems:
                 "Its options are:",
                 details=options_help,
                 slot=f"desired{idx}",
+                suggestions=other_options,
             )
         if vm.status == "unknown_option":
             if vm.unknown and any(
@@ -177,6 +182,7 @@ class SwapItems:
                 preface=f'"{vm.unknown}" isn\'t an option for the {item.name}.',
                 details=options_help,
                 slot=f"desired{idx}",
+                suggestions=other_options,
             )
         if vm.status == "same":
             return Ask(
@@ -184,6 +190,7 @@ class SwapItems:
                 preface=f"That's the same as the {item.name} you have.",
                 details=options_help,
                 slot=f"desired{idx}",
+                suggestions=other_options,
             )
         variants = [product.variants[i] for i in vm.item_ids]
         if not variants:
@@ -192,6 +199,7 @@ class SwapItems:
                 "should we skip this item?",
                 preface=f"Sorry, no other {item.name} options are in stock right now.",
                 slot=f"desired{idx}",
+                suggestions=SKIP_REQUEST,
             )
         if vm.status == "choices":
             question, preface = (
@@ -204,7 +212,7 @@ class SwapItems:
         return Ask(
             question=question,
             preface=preface,
-            details=F.numbered([F.variant_text(v) for v in variants]),
+            options=[F.variant_text(v) for v in variants],
             slot=f"variant{idx}",
             choices={"kind": "variant", "values": vm.item_ids, "index": idx},
         )
@@ -309,3 +317,12 @@ MODIFY_SPEC = SwapItems(
 EXCHANGE_SPEC = SwapItems(
     "exchange_items", "exchange_delivered_order_items", M.EXCHANGE_REMINDER, "exchange"
 )
+
+
+def _other_options(schema: dict[str, list[str]], current: dict[str, str]) -> list[dict]:
+    """Option values the item doesn't have yet, one per option name first ("size: 80%")."""
+    per_name = [
+        [f"{name}: {v}" for v in values if v != current.get(name)]
+        for name, values in schema.items()
+    ]
+    return [suggestion(p) for group in zip_longest(*per_name) for p in group if p]

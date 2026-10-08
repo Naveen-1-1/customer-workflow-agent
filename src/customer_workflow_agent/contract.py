@@ -1,7 +1,8 @@
 """The contract between the graph and the API: what the graph pauses for, and how to resume.
 
 The graph only waits on the outside world through `interrupt(payload)`, one per node:
-- {"type": "await_customer", "messages": [...]}           resume: {"text": str}
+- {"type": "await_customer", "messages": [...], "suggestions": [...]}
+                                                          resume: {"text": str}
 - {"type": "confirm", "messages": [...], "summary": {...}, "action": str}
                                                           resume: {"confirmed": bool}
 - {"type": "supervisor_approval", "messages": [...], "request": {...}}
@@ -18,6 +19,13 @@ PendingType = Literal["await_customer", "confirm", "supervisor_approval"]
 class CustomerReply(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=2000)
+
+
+class Suggestion(BaseModel):
+    """A reply the customer can click instead of typing; `text` is sent as their message."""
+
+    label: str
+    text: str
 
 
 class ConfirmReply(BaseModel):

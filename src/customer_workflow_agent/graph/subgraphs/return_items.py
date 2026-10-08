@@ -28,7 +28,7 @@ def check_returns_not_blocked(slots: dict, found: dict, ctx: Ctx) -> Check:
 def find_items(slots: dict, found: dict, ctx: Ctx) -> Check:
     """Which lines of the order the customer means ("the watch", "everything")."""
     order = the_order(found, ctx)
-    item_list = F.numbered([F.item_text(i) for i in order.items])
+    item_list = [F.item_text(i) for i in order.items]
     lines: list[int] = []
     if slots.get("all_items"):
         lines = list(range(len(order.items)))
@@ -43,7 +43,7 @@ def find_items(slots: dict, found: dict, ctx: Ctx) -> Check:
             elif m.status == "ambiguous":
                 return Ask(
                     question=f"Which {entry['ref']['product']} would you like to return?",
-                    details=F.numbered([F.item_text(order.items[i]) for i in m.lines]),
+                    options=[F.item_text(order.items[i]) for i in m.lines],
                     slot="items",
                     choices={"kind": "return_line", "values": m.lines, "index": idx},
                 )
@@ -52,13 +52,13 @@ def find_items(slots: dict, found: dict, ctx: Ctx) -> Check:
                     question="Which items would you like to return? Its items are:",
                     preface=f'I couldn\'t find "{entry["ref"]["product"]}" in order '
                     f"{order.order_id}.",
-                    details=item_list,
+                    options=item_list,
                     slot="items",
                 )
     if not lines:
         return Ask(
             question="Which items from this order would you like to return?",
-            details=item_list,
+            options=item_list,
             slot="items",
         )
     return Found({"lines": sorted(lines)})

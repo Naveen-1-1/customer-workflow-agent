@@ -16,12 +16,18 @@ export interface ConfirmSummary {
   amount_label: string | null
 }
 
+export interface Suggestion {
+  label: string
+  text: string // sent as the customer's message
+}
+
 export interface Pending {
   type: 'await_customer' | 'confirm' | 'supervisor_approval'
   interrupt_id: string
   action?: string | null
   summary?: ConfirmSummary | null
   refund_total?: number | null
+  suggestions?: Suggestion[] // await_customer: at most 3 reply buttons
 }
 
 export interface ChatView {

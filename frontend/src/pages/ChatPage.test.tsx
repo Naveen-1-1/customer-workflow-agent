@@ -1,10 +1,10 @@
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/api/client'
 import { chatReducer, initialChatState } from '@/hooks/useChat'
 import { FakeEventSource } from '@/test/FakeEventSource'
-import { confirmPending, fakeApi, renderAt, view } from '@/test/fixtures'
+import { chatting, confirmPending, fakeApi, renderAt, scenarios, view } from '@/test/fixtures'
 import { BUSY_TEXT, ChatPage } from './ChatPage'
 
 function setup() {
@@ -22,12 +22,42 @@ describe('ChatPage', () => {
     const { api, es, emit } = setup()
     expect(es.url).toBe('/api/chats/c1/events')
     emit(view())
-    expect(screen.getByText('Hi! How can I help?')).toBeInTheDocument()
+    // Before the first message: the landing screen, with the greeting implied.
+    expect(screen.getByRole('heading', { name: /Good (morning|afternoon|evening)/ })).toBeVisible()
+    expect(screen.queryByText('Hi! How can I help?')).not.toBeInTheDocument()
     await userEvent.type(composer(), 'cancel my order{Enter}')
     expect(api.send).toHaveBeenCalledWith('c1', 'i1', 'cancel my order')
-    expect(screen.getByText('cancel my order')).toBeInTheDocument() // shown right away
+    // The first message switches to the chat, shown right away with the greeting.
+    expect(screen.getByText('cancel my order')).toBeInTheDocument()
+    expect(screen.getByText('Hi! How can I help?')).toBeInTheDocument()
     expect(composer()).toBeDisabled()
     expect(screen.getByText('Typing…')).toBeInTheDocument()
+  })
+
+  it('sends a demo scenario from the landing screen in one click', async () => {
+    const { api, emit } = setup()
+    emit(view({ pending: { type: 'await_customer', interrupt_id: 'i1', suggestions: scenarios } }))
+    await userEvent.click(screen.getByRole('button', { name: /Exchange two items/ }))
+    expect(api.send).toHaveBeenCalledWith('c1', 'i1', scenarios[0].text)
+  })
+
+  it('offers at most 3 reply buttons in the chat, and a click sends the reply', async () => {
+    const { api, emit } = setup()
+    const offered = [...scenarios, { label: 'Fourth', text: 'fourth' }].map((s, i) => ({
+      label: `Option ${i + 1}`,
+      text: s.text,
+    }))
+    emit(
+      view({
+        messages: chatting,
+        pending: { type: 'await_customer', interrupt_id: 'i4', suggestions: offered },
+      }),
+    )
+    const row = screen.getByLabelText('Suggested replies')
+    expect(within(row).getAllByRole('button')).toHaveLength(3)
+    await userEvent.click(within(row).getByRole('button', { name: 'Option 2' }))
+    expect(api.send).toHaveBeenCalledWith('c1', 'i4', offered[1].text)
+    expect(screen.queryByLabelText('Suggested replies')).not.toBeInTheDocument() // sending
   })
 
   it('opens the popup for a confirmation and answers it', async () => {

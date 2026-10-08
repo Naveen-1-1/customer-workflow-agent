@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from customer_workflow_agent.contract import Suggestion
+
 
 class MessageOut(BaseModel):
     id: str
@@ -18,6 +20,7 @@ class Pending(BaseModel):
     action: str | None = None
     summary: dict | None = None  # confirm: {title, lines, amount, amount_label}
     refund_total: float | None = None  # supervisor_approval
+    suggestions: list[Suggestion] = []  # await_customer: at most 3 reply buttons
 
 
 class ChatView(BaseModel):

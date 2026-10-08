@@ -22,6 +22,7 @@ A customer opens the chat page and types. The backend walks a flowchart:
   - transfer to a human
 - **Several requests in one message are queued** and handled one after another. Anything new mentioned mid-request waits until the current one is done (say "skip" to drop it).
 - **Before any change**, the customer sees a **Yes/No popup** with exactly what will change. Nothing is written without that click.
+- **Reply buttons at every question** (at most 3): the options the agent just listed (orders, items, payment methods), or fixed replies for open questions. The chat opens on a landing screen with three τ²-bench demo customers to try.
 - **Optional supervisor approval for large returns.** When `APPROVAL_ENABLED=true`, a return whose refund is over `APPROVAL_THRESHOLD` waits for a supervisor on `/supervisor`:
   - **Approve:** the return goes through.
   - **Reject:** the customer sees the note, is offered a human agent, and further returns on that order are blocked until the demo is reset.

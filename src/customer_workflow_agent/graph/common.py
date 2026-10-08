@@ -29,10 +29,21 @@ ITEM_LEVEL = {"modify_order_items", "exchange_items", "return_items"}
 # ---- pauses (each is the only thing its node does) -------------------------------------
 
 
+MAX_SUGGESTIONS = 3
+
+
 async def wait_for_customer(state: ChatState) -> dict:
-    reply = interrupt({"type": "await_customer", "messages": undelivered(state)})
+    suggestions = (state.get("suggestions") or [])[:MAX_SUGGESTIONS]
+    reply = interrupt(
+        {"type": "await_customer", "messages": undelivered(state), "suggestions": suggestions}
+    )
     text = CustomerReply.model_validate(reply).text.strip()
-    return {"messages": [customer_msg(text)], "last_text": text, "last_delivered": last_id(state)}
+    return {
+        "messages": [customer_msg(text)],
+        "last_text": text,
+        "last_delivered": last_id(state),
+        "suggestions": [],  # each pause offers only what the question before it set
+    }
 
 
 def confirm_pause(state: ChatState, summary: dict, action: str) -> tuple[bool, dict]:

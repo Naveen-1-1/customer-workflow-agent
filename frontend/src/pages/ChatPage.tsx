@@ -5,7 +5,9 @@ import type { Meta } from '@/api/types'
 import { Composer } from '@/components/Composer'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ConnectionBadge } from '@/components/ConnectionBadge'
+import { Landing } from '@/components/Landing'
 import { MessageList } from '@/components/MessageList'
+import { Suggestions } from '@/components/Suggestions'
 import { Button } from '@/components/ui/button'
 import { useChat } from '@/hooks/useChat'
 import { usd } from '@/lib/format'
@@ -41,6 +43,7 @@ export function ChatPage() {
   const { api } = useDeps()
   const { state, status, send, answer, retry } = useChat(chatId)
   const [meta, setMeta] = useState<Meta | null>(null)
+  const [draft, setDraft] = useState('')
 
   useEffect(() => {
     api.meta().then(setMeta, () => setMeta(null))
@@ -60,6 +63,38 @@ export function ChatPage() {
   const busy = submitting || Boolean(view?.running)
   const messages = view ? [...view.messages, ...(optimistic ? [optimistic] : [])] : []
   const canType = pending?.type === 'await_customer' && !busy && !state.reset
+  const suggestions = canType ? (pending.suggestions ?? []) : []
+
+  const keyMissing = meta && !meta.llm_configured && (
+    <Notice tone="warn">
+      NVIDIA_API_KEY isn't set, so the agent can't understand messages yet. Add it to .env and
+      restart the backend.
+    </Notice>
+  )
+
+  const busyNotice = state.busy && <Notice tone="warn">{BUSY_TEXT}</Notice>
+
+  // Until the customer's first message, the chat is a landing screen (the greeting is implied).
+  // Anything else needing attention (an error, a popup, the end) shows in the chat itself.
+  const started = messages.some((m) => m.role === 'customer')
+  const quiet = !view?.error && !view?.ended && !state.reset && !state.notFound
+  if (view && !started && quiet && (!pending || pending.type === 'await_customer')) {
+    return (
+      <Landing
+        text={draft}
+        onTextChange={setDraft}
+        scenarios={pending?.suggestions ?? []}
+        canType={canType}
+        notice={
+          <>
+            {keyMissing}
+            {busyNotice}
+          </>
+        }
+        onSend={send}
+      />
+    )
+  }
 
   return (
     <div className="mx-auto flex h-dvh max-w-2xl flex-col gap-3 p-4">
@@ -76,14 +111,9 @@ export function ChatPage() {
         </div>
       </header>
 
-      {meta && !meta.llm_configured && (
-        <Notice tone="warn">
-          NVIDIA_API_KEY isn't set, so the agent can't understand messages yet. Add it to .env and
-          restart the backend.
-        </Notice>
-      )}
+      {keyMissing}
 
-      <main className="flex-1 overflow-y-auto rounded-xl border p-3">
+      <main className="flex-1 overflow-y-auto rounded-xl border bg-card p-3">
         {refused ? (
           <Notice tone="warn">
             <div className="flex items-center justify-between gap-2">
@@ -108,7 +138,7 @@ export function ChatPage() {
           will update as soon as they decide.
         </Notice>
       )}
-      {state.busy && <Notice tone="warn">{BUSY_TEXT}</Notice>}
+      {busyNotice}
       {view?.error && !busy && (
         <Notice tone="warn">
           <div className="flex items-center justify-between gap-2">
@@ -137,13 +167,22 @@ export function ChatPage() {
       )}
 
       {!refused && !view?.ended && !state.reset && !state.notFound && (
-        <Composer
-          disabled={!canType}
-          placeholder={
-            pending?.type === 'supervisor_approval' ? 'Waiting for approval…' : undefined
-          }
-          onSend={send}
-        />
+        <>
+          <Suggestions
+            suggestions={suggestions}
+            disabled={!canType}
+            onPick={(text) => void send(text)}
+          />
+          <Composer
+            text={draft}
+            onTextChange={setDraft}
+            disabled={!canType}
+            placeholder={
+              pending?.type === 'supervisor_approval' ? 'Waiting for approval…' : undefined
+            }
+            onSend={send}
+          />
+        </>
       )}
 
       {pending?.type === 'confirm' && pending.summary && (
